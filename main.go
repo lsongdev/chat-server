@@ -15,6 +15,34 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+type Conversation struct {
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Members []string `json:"members"`
+}
+
+type Message struct {
+	ID             int64     `json:"id"`
+	FromUser       string    `json:"user_id"`
+	ConversationID string    `json:"conversation_id"`
+	Content        string    `json:"content"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+type User struct {
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	Email    string `json:"email"`
+	Password string `json:"password"` // 密码不会在JSON中返回
+}
+
+type Session struct {
+	ID        int64     `json:"id"`
+	Token     string    `json:"token"`
+	UserID    int64     `json:"user_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type sessionId string
 
 const userIDKey sessionId = "user_id"
@@ -67,7 +95,7 @@ func (s *Server) initDB() error {
 		return err
 	}
 	_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS conversations (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id TEXT PRIMARY KEY,
 		name TEXT NOT NULL,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	)`)
@@ -76,8 +104,8 @@ func (s *Server) initDB() error {
 	}
 	_, err = s.db.Exec(`
 		CREATE TABLE IF NOT EXISTS conversation_members (
-			conversation_id INTEGER NOT NULL,
-			user_id INTEGER NOT NULL,
+			conversation_id TEXT NOT NULL,
+			user_id TEXT NOT NULL,
 			PRIMARY KEY (conversation_id, user_id),
 			FOREIGN KEY (conversation_id) REFERENCES conversations(id),
 			FOREIGN KEY (user_id) REFERENCES users(id)
@@ -88,8 +116,8 @@ func (s *Server) initDB() error {
 	}
 	_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS messages (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		user_id INTEGER NOT NULL,
-		conversation_id INTEGER NOT NULL,
+		user_id TEXT NOT NULL,
+		conversation_id TEXT NOT NULL,
 		content TEXT NOT NULL,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		FOREIGN KEY (conversation_id) REFERENCES conversations(id),
@@ -140,34 +168,6 @@ func (reader *Server) Render(w http.ResponseWriter, templateName string, data H)
 	}
 }
 
-type Conversation struct {
-	ID      int64   `json:"id"`
-	Name    string  `json:"name"`
-	Members []int64 `json:"members"` // 会话成员的用户ID列表
-}
-
-type Message struct {
-	ID             int64     `json:"id"`
-	FromUserID     int64     `json:"from_user_id"`
-	ConversationID int64     `json:"conversation_id"`
-	Content        string    `json:"content"`
-	CreatedAt      time.Time `json:"created_at"`
-}
-
-type User struct {
-	ID       int64  `json:"id"`
-	Name     string `json:"name"`
-	Email    string `json:"email"`
-	Password string `json:"password"` // 密码不会在JSON中返回
-}
-
-type Session struct {
-	ID        int64     `json:"id"`
-	Token     string    `json:"token"`
-	UserID    int64     `json:"user_id"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -182,7 +182,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		if r.Header.Get("Content-Type") == "application/json" {
+		if r.URL.Query().Has("format") && r.URL.Query().Get("format") == "json" {
 			s.getConversations(w, r)
 		} else {
 			s.Render(w, "conversations", nil)
@@ -195,24 +195,24 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createConversation(w http.ResponseWriter, r *http.Request) {
-	// userID := r.Context().Value(userIDKey).(int64)
+	// userID := r.Context().Value(userIDKey).(string)
 	var conversation Conversation
-	if r.Header.Get("Content-Type") == "application/json" {
-		if err := json.NewDecoder(r.Body).Decode(&conversation); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
+	if err := json.NewDecoder(r.Body).Decode(&conversation); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
-	result, err := s.db.Exec("INSERT INTO conversations (name) VALUES (?)", conversation.Name)
+	conversation.ID = uuid.New().String()
+	result, err := s.db.Exec("INSERT INTO conversations (id, name) VALUES (?, ?)", conversation.ID, conversation.Name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	conversation.ID, err = result.LastInsertId()
+	id, err := result.LastInsertId()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	log.Println(id)
 	for _, member := range conversation.Members {
 		s.db.Exec("INSERT INTO conversation_members (conversation_id, user_id) VALUES (?, ?)", conversation.ID, member)
 	}
@@ -222,22 +222,52 @@ func (s *Server) createConversation(w http.ResponseWriter, r *http.Request) {
 
 // 消息API处理函数
 func (s *Server) getMessages(w http.ResponseWriter, r *http.Request) {
-	// userID := r.Context().Value(userIDKey).(int64)
+	email := r.Context().Value(userIDKey).(string)
+	// select conversation_id from conversation_members where user_id = ?
+	rows, err := s.db.Query(`select * from messages where conversation_id in (select conversation_id from conversation_members where user_id = ?) order by created_at`, email)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	messages := []Message{}
+	for rows.Next() {
+		var message Message
+		if err := rows.Scan(&message.ID, &message.FromUser, &message.ConversationID, &message.Content, &message.CreatedAt); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		messages = append(messages, message)
+	}
+	json.NewEncoder(w).Encode(messages)
 }
 
 func (s *Server) createMessage(w http.ResponseWriter, r *http.Request) {
-	// userID := r.Context().Value(userIDKey).(int64)
+	email := r.Context().Value(userIDKey).(string)
 	var message Message
 	if err := json.NewDecoder(r.Body).Decode(&message); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	message.FromUser = email
+	log.Println(message)
+	result, err := s.db.Exec("INSERT INTO messages (user_id, conversation_id, content) VALUES (?, ?, ?)", message.FromUser, message.ConversationID, message.Content)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	message.ID = id
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(message)
 }
 
-// 用户认证中间件
 func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// get token from cookie and header
 		var token string
 		cookie, err := r.Cookie("token")
 		if err != nil {
@@ -250,34 +280,25 @@ func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "Missing authorization token", http.StatusUnauthorized)
 			return
 		}
-
-		// 从token中获取用户信息
-		var userID int64
-		err = s.db.QueryRow("SELECT user_id FROM sessions WHERE token = ?", token).Scan(&userID)
+		rows, err := s.db.Query(`select u.email from sessions s join users u on s.user_id = u.id where s.token = ?`, token)
 		if err != nil {
-			if err == sql.ErrNoRows {
-				http.Error(w, "Invalid token", http.StatusUnauthorized)
-			} else {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		// 将用户ID添加到请求上下文
-		ctx := context.WithValue(r.Context(), userIDKey, userID)
-		next.ServeHTTP(w, r.WithContext(ctx))
+		var email string
+		rows.Next()
+		rows.Scan(&email)
+		rows.Close()
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userIDKey, email)))
 	}
 }
 
-// 用户API处理函数
 func (s *Server) registerUser(w http.ResponseWriter, r *http.Request) {
-
 	if r.Method == "GET" {
 		s.Render(w, "signup", nil)
 		return
 	}
-
 	var user User
-
 	if r.Header.Get("Content-Type") == "application/json" {
 		if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -289,7 +310,6 @@ func (s *Server) registerUser(w http.ResponseWriter, r *http.Request) {
 		user.Password = r.FormValue("password")
 	}
 
-	// TODO: 对密码进行哈希处理
 	result, err := s.db.Exec("INSERT INTO users (name, email, password) VALUES (?, ?, ?)",
 		user.Name, user.Email, user.Password)
 	if err != nil {
@@ -321,7 +341,6 @@ func (s *Server) loginUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var credentials User
-
 	if r.Header.Get("Content-Type") == "application/json" {
 		if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -352,13 +371,10 @@ func (s *Server) loginUser(w http.ResponseWriter, r *http.Request) {
 	// 生成会话token
 	token := uuid.New().String()
 	session := Session{
-		UserID:    user.ID,
-		Token:     token,
-		CreatedAt: time.Now(),
+		UserID: user.ID,
+		Token:  token,
 	}
-
-	result, err := s.db.Exec("INSERT INTO sessions (user_id, token, created_at) VALUES (?, ?, ?)",
-		session.UserID, session.Token, session.CreatedAt.Format("2006-01-02 15:04:05"))
+	result, err := s.db.Exec("INSERT INTO sessions (user_id, token) VALUES (?, ?)", session.UserID, session.Token)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -398,7 +414,7 @@ func (s *Server) homeView(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getConversations(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(userIDKey).(int64)
+	userID := r.Context().Value(userIDKey).(string)
 	rows, err := s.db.Query(`SELECT id, name FROM conversations WHERE id IN (SELECT conversation_id FROM conversation_members WHERE user_id = ?)`, userID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -419,12 +435,12 @@ func (s *Server) getConversations(w http.ResponseWriter, r *http.Request) {
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var userID int64
-			if err := rows.Scan(&userID); err != nil {
+			var email string
+			if err := rows.Scan(&email); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			conversation.Members = append(conversation.Members, userID)
+			conversation.Members = append(conversation.Members, email)
 		}
 		conversations = append(conversations, conversation)
 	}

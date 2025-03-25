@@ -3,141 +3,53 @@
 <form id="createConversationForm">
     <div>
         <label for="conversationName">Conversation Name</label>
-        <input type="text" id="conversationName" required>
+        <input type="text" name="name" required value="test">
     </div>
-
     <div>
         <label>Members</label>
-        <div class="member-input">
-            <input type="email" id="memberEmail" placeholder="Enter member email">
-            <button type="button" id="addMember">Add</button>
-        </div>
-        <ul id="membersList">
-            <!-- 成员列表将通过 JavaScript 动态更新 -->
-        </ul>
+        <input type="email" name="members" placeholder="Enter member email" value="song940@gmail.com">
+        <input type="email" name="members" placeholder="Enter member email" value="song940@gmail.com">
     </div>
 
     <button type="submit">Create Conversation</button>
 </form>
 
-<style>
-.conversations-container {
-    max-width: 800px;
-    margin: 0 auto;
-    padding: 1rem;
-}
+<h3>Send Message to Conversation</h3>
+<form id="sendMessageForm" method="POST" action="/messages" >
+    <label for="conversation_id">Conversation ID</label>
+    <input type="text" name="conversation_id" value="ca9fbc8e-8a48-4205-9208-80870f8ec951">
+    <label for="content">Message</label>
+    <textarea name="content" id="content" placeholder="Enter message">hi</textarea>
+    <button type="submit">Send</button>
+</form>
+<script type="module">
+import { serialize } from "https://lsong.org/scripts/dom/form.js"
 
-.member-input {
-    display: flex;
-    gap: 0.5rem;
-    margin-bottom: 1rem;
-}
-
-#membersList {
-    list-style: none;
-    padding: 0;
-}
-
-#membersList li {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 0.5rem;
-    margin-bottom: 0.5rem;
-    background: #f0f0f0;
-    border-radius: 4px;
-}
-
-.remove-member {
-    color: red;
-    cursor: pointer;
-    border: none;
-    background: none;
-    padding: 0.25rem 0.5rem;
-}
-
-#conversationsList .conversation {
-    padding: 1rem;
-    margin-bottom: 1rem;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    cursor: pointer;
-}
-
-#conversationsList .conversation:hover {
-    background: #f5f5f5;
-}
-</style>
-
-<script>
-// 存储已添加的成员邮箱
-const members = new Set();
-
-// 添加成员到列表
-document.getElementById('addMember').addEventListener('click', () => {
-    const emailInput = document.getElementById('memberEmail');
-    const email = emailInput.value.trim();
-    
-    if (!email) {
-        alert('Please enter an email address');
-        return;
-    }
-    
-    if (!email.includes('@')) {
-        alert('Please enter a valid email address');
-        return;
-    }
-    
-    if (members.has(email)) {
-        alert('This member is already added');
-        return;
-    }
-    
-    members.add(email);
-    const membersList = document.getElementById('membersList');
-    const li = document.createElement('li');
-    li.innerHTML = `
-        ${email}
-        <button type="button" class="remove-member" onclick="removeMember('${email}')">&times;</button>
-    `;
-    membersList.appendChild(li);
-    emailInput.value = '';
-});
-
-// 从列表中移除成员
-function removeMember(email) {
-    members.delete(email);
-    const membersList = document.getElementById('membersList');
-    const items = membersList.getElementsByTagName('li');
-    for (let item of items) {
-        if (item.textContent.includes(email)) {
-            item.remove();
-            break;
-        }
-    }
-}
-
-// 处理创建会话表单提交
 document.getElementById('createConversationForm').addEventListener('submit', async (e) => {
     e.preventDefault();
+    const formData = serialize(e.target);
+    formData.members = [
+        "song940@gmail.com",
+    ];
+    console.log(formData);
+    const response = await fetch("/conversations", {
+        method: "POST",
+        body: JSON.stringify(formData),
+    })
+    const data = await response.json();
+    console.log(data);
     
-    const name = document.getElementById('conversationName').value.trim();
-    if (!name) {
-        alert('Please enter a conversation name');
-        return;
-    }
-    
-    const response = await fetch('/conversations', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            name: name,
-            members: [1]
-        })
-    });
 });
 
+document.getElementById('sendMessageForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const formData = serialize(e.target);
+    const response = await fetch("/messages", {
+        method: "POST",
+        body: JSON.stringify(formData),
+    })
+    const data = await response.json();
+    console.log(data);
+});
 </script>
 {{end}} 
