@@ -1,0 +1,120 @@
+{{define "layout"}}
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>flame chat</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+  <style>
+    .chat-container {
+      display: flex;
+      height: 90vh;
+      margin: -1rem;
+    }
+
+    .sidebar {
+      width: 300px;
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+    }
+
+    .main-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 1rem;
+    }
+
+    .messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1rem;
+    }
+
+    .message {
+      margin: 0.5rem 0;
+      padding: 0.5rem;
+      border-radius: 4px;
+    }
+
+    .message.sent {
+      background: var(--button-base);
+      color: var(--text-bright);
+      margin-left: 20%;
+    }
+
+    .message.received {
+      background: var(--background);
+      border: 1px solid var(--border);
+      margin-right: 20%;
+    }
+
+    .conversation-item {
+      padding: 0.5rem;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+    }
+
+    .conversation-item:hover {
+      background: var(--background);
+    }
+
+    .conversation-item.active {
+      background: var(--button-base);
+      color: var(--text-bright);
+    }
+
+    .message-form {
+      display: flex;
+      gap: 0.5rem;
+      padding: 1rem;
+      border-top: 1px solid var(--border);
+    }
+
+    .message-input {
+      flex: 1;
+    }
+
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.5);
+      align-items: center;
+      justify-content: center;
+    }
+
+    .modal-content {
+      background: var(--background);
+      padding: 2rem;
+      border-radius: 4px;
+      max-width: 500px;
+      width: 100%;
+    }
+
+  </style>
+</head>
+
+<body>
+  <h1>flame chat</h1>
+  <nav>
+    <a href="/">Home</a>
+    <a href="/conversations">Conversations</a>
+    <a href="/signup">Signup</a>
+    <a href="/login">Login</a>
+    <a method="delete" href="/logout">Logout</a>
+  </nav>
+
+  <main>
+    {{template "content" .}}
+  </main>
+</body>
+
+</html>
+
+{{end}}
