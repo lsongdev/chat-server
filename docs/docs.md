@@ -259,3 +259,120 @@ db.SetConnMaxLifetime(5 * time.Minute)
 2. **消息分区**：按时间或会话 ID 对消息表进行分区
 3. **缓存层**：引入 Redis 缓存热门会话和最近消息
 4. **微服务拆分**：将消息处理和用户管理拆分为独立服务
+
+
+
+// func (s *Server) registerUser(w http.ResponseWriter, r *http.Request) {
+// 	if r.Method == "GET" {
+// 		s.Render(w, "signup", nil)
+// 		return
+// 	}
+// 	var user User
+// 	if r.Header.Get("Content-Type") == "application/json" {
+// 		if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
+// 			http.Error(w, err.Error(), http.StatusBadRequest)
+// 			return
+// 		}
+// 	} else {
+// 		user.Name = r.FormValue("name")
+// 		user.Email = r.FormValue("email")
+// 		user.Password = r.FormValue("password")
+// 	}
+
+// 	result, err := s.db.Exec("INSERT INTO users (name, email, password) VALUES (?, ?, ?)",
+// 		user.Name, user.Email, user.Password)
+// 	if err != nil {
+// 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+// 			http.Error(w, "Email already exists", http.StatusConflict)
+// 		} else {
+// 			http.Error(w, err.Error(), http.StatusInternalServerError)
+// 		}
+// 		return
+// 	}
+
+// 	id, err := result.LastInsertId()
+// 	if err != nil {
+// 		http.Error(w, err.Error(), http.StatusInternalServerError)
+// 		return
+// 	}
+// 	user.ID = id
+// 	user.Password = "" // 不返回密码
+
+// 	w.WriteHeader(http.StatusCreated)
+// 	json.NewEncoder(w).Encode(user)
+// }
+
+// func (s *Server) loginUser(w http.ResponseWriter, r *http.Request) {
+// 	if r.Method == "GET" {
+// 		s.Render(w, "login", nil)
+// 		return
+// 	}
+
+// 	var credentials User
+// 	if r.Header.Get("Content-Type") == "application/json" {
+// 		if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil {
+// 			http.Error(w, err.Error(), http.StatusBadRequest)
+// 			return
+// 		}
+// 	} else {
+// 		credentials.Email = r.FormValue("email")
+// 		credentials.Password = r.FormValue("password")
+// 	}
+
+// 	var user User
+// 	err := s.db.QueryRow("SELECT id, name, email, password FROM users WHERE email = ?",
+// 		credentials.Email).Scan(&user.ID, &user.Name, &user.Email, &user.Password)
+// 	if err != nil {
+// 		if err == sql.ErrNoRows {
+// 			http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+// 		} else {
+// 			http.Error(w, err.Error(), http.StatusInternalServerError)
+// 		}
+// 		return
+// 	}
+// 	// TODO: 验证密码哈希
+// 	if user.Password != credentials.Password {
+// 		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+// 		return
+// 	}
+
+// 	// 生成会话token
+// 	token := uuid.New().String()
+// 	session := Session{
+// 		UserID: user.ID,
+// 		Token:  token,
+// 	}
+// 	result, err := s.db.Exec("INSERT INTO sessions (user_id, token) VALUES (?, ?)", session.UserID, session.Token)
+// 	if err != nil {
+// 		http.Error(w, err.Error(), http.StatusInternalServerError)
+// 		return
+// 	}
+
+// 	id, err := result.LastInsertId()
+// 	if err != nil {
+// 		http.Error(w, err.Error(), http.StatusInternalServerError)
+// 		return
+// 	}
+// 	session.ID = id
+
+// 	w.Header().Set("Content-Type", "application/json")
+// 	w.Header().Set("Set-Cookie", fmt.Sprintf("token=%s; Path=/; HttpOnly; SameSite=Lax", token))
+// 	w.WriteHeader(http.StatusOK)
+// 	json.NewEncoder(w).Encode(session)
+// }
+
+// func (s *Server) logoutUser(w http.ResponseWriter, r *http.Request) {
+// 	token := r.Header.Get("Authorization")
+// 	if token == "" {
+// 		http.Error(w, "Missing authorization token", http.StatusUnauthorized)
+// 		return
+// 	}
+
+// 	_, err := s.db.Exec("DELETE FROM sessions WHERE token = ?", token)
+// 	if err != nil {
+// 		http.Error(w, err.Error(), http.StatusInternalServerError)
+// 		return
+// 	}
+
+// 	w.WriteHeader(http.StatusNoContent)
+// }
