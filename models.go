@@ -69,6 +69,8 @@ type Event struct {
 	Seq            int64           `json:"seq"`
 	ID             uuid.UUID       `json:"id"`
 	SenderID       *uuid.UUID      `json:"sender_id,omitempty"`
+	SenderEmail    string          `json:"sender_email,omitempty"`
+	SenderName     string          `json:"sender_name,omitempty"`
 	Type           string          `json:"type"`
 	Payload        json.RawMessage `json:"payload"`
 	CreatedAt      time.Time       `json:"created_at"`

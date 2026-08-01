@@ -135,38 +135,120 @@ func (s *Store) ConsumeLoginAttempt(ctx context.Context, state string) (LoginAtt
 }
 
 func (s *Store) UpsertOIDCUser(ctx context.Context, issuer string, claims OIDCClaims) (User, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return User{}, err
+	}
+	defer tx.Rollback()
 	user := User{ID: uuid.New()}
-	err := s.db.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
+		UPDATE users SET username=NULLIF($3,''),display_name=NULLIF($4,''),email=NULLIF($5,''),
+			email_verified=$6,picture_url=NULLIF($7,''),last_login_at=now(),updated_at=now()
+		WHERE oidc_issuer=$1 AND oidc_subject=$2
+		RETURNING id,oidc_subject,COALESCE(username,''),COALESCE(display_name,''),
+			COALESCE(email,''),email_verified,COALESCE(picture_url,''),status`,
+		issuer, claims.Subject, claims.Username, claims.Name, claims.Email,
+		claims.EmailVerified, claims.Picture).Scan(&user.ID, &user.Subject, &user.Username,
+		&user.DisplayName, &user.Email, &user.EmailVerified, &user.PictureURL, &user.Status)
+	if err == nil {
+		if err := tx.Commit(); err != nil {
+			return User{}, err
+		}
+		return user, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return User{}, err
+	}
+
+	// Native and browser logins converge on the same account by normalized email.
+	// Only an unambiguous match is linked to a new OIDC identity.
+	if email, ok := normalizeEmail(claims.Email); ok {
+		var count int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM users WHERE lower(email)=lower($1)`, email).Scan(&count); err != nil {
+			return User{}, err
+		}
+		if count > 1 {
+			return User{}, ErrAmbiguousEmail
+		}
+		if count == 1 {
+			err = tx.QueryRowContext(ctx, `UPDATE users SET oidc_issuer=$1,oidc_subject=$2,
+				username=NULLIF($3,''),display_name=NULLIF($4,''),email=$5,email_verified=$6,
+				picture_url=NULLIF($7,''),last_login_at=now(),updated_at=now()
+				WHERE lower(email)=lower($5)
+				RETURNING id,oidc_subject,COALESCE(username,''),COALESCE(display_name,''),COALESCE(email,''),
+				email_verified,COALESCE(picture_url,''),status`, issuer, claims.Subject, claims.Username, claims.Name, email,
+				claims.EmailVerified, claims.Picture).Scan(&user.ID, &user.Subject, &user.Username, &user.DisplayName, &user.Email, &user.EmailVerified, &user.PictureURL, &user.Status)
+			if err != nil {
+				return User{}, err
+			}
+			if err := tx.Commit(); err != nil {
+				return User{}, err
+			}
+			return user, nil
+		}
+	}
+
+	err = tx.QueryRowContext(ctx, `
 		INSERT INTO users(id, oidc_issuer, oidc_subject, username, display_name, email,
 			email_verified, picture_url, last_login_at)
 		VALUES($1,$2,$3,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7,NULLIF($8,''),now())
-		ON CONFLICT (oidc_issuer, oidc_subject) DO UPDATE SET
-			username=EXCLUDED.username, display_name=EXCLUDED.display_name,
-			email=EXCLUDED.email, email_verified=EXCLUDED.email_verified,
-			picture_url=EXCLUDED.picture_url, last_login_at=now(), updated_at=now()
 		RETURNING id, oidc_subject, COALESCE(username,''), COALESCE(display_name,''),
 			COALESCE(email,''), email_verified, COALESCE(picture_url,''), status`,
 		user.ID, issuer, claims.Subject, claims.Username, claims.Name, claims.Email,
 		claims.EmailVerified, claims.Picture).Scan(&user.ID, &user.Subject, &user.Username,
 		&user.DisplayName, &user.Email, &user.EmailVerified, &user.PictureURL, &user.Status)
-	return user, err
+	if err != nil {
+		return User{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return User{}, err
+	}
+	return user, nil
 }
 
 // UpsertEmailUser is the intentionally small native-client identity flow. Email is
 // the stable login identifier; no password or provider token is stored.
 func (s *Store) UpsertEmailUser(ctx context.Context, name, email string) (User, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return User{}, err
+	}
+	defer tx.Rollback()
 	user := User{ID: uuid.New()}
-	err := s.db.QueryRowContext(ctx, `
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM users WHERE lower(email)=lower($1)`, email).Scan(&count); err != nil {
+		return User{}, err
+	}
+	if count > 1 {
+		return User{}, ErrAmbiguousEmail
+	}
+	if count == 1 {
+		err := tx.QueryRowContext(ctx, `UPDATE users SET display_name=$2,email=$1,last_login_at=now(),updated_at=now()
+			WHERE lower(email)=lower($1)
+			RETURNING id,oidc_subject,COALESCE(username,''),COALESCE(display_name,''),COALESCE(email,''),
+				email_verified,COALESCE(picture_url,''),status`, email, name).Scan(&user.ID, &user.Subject, &user.Username, &user.DisplayName, &user.Email, &user.EmailVerified, &user.PictureURL, &user.Status)
+		if err != nil {
+			return User{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return User{}, err
+		}
+		return user, nil
+	}
+	err = tx.QueryRowContext(ctx, `
 		INSERT INTO users(id,oidc_issuer,oidc_subject,display_name,email,email_verified,last_login_at)
 		VALUES($1,'email',$2,NULLIF($3,''),$2,true,now())
-		ON CONFLICT (oidc_issuer,oidc_subject) DO UPDATE SET
-			display_name=EXCLUDED.display_name,email=EXCLUDED.email,email_verified=true,
-			last_login_at=now(),updated_at=now()
 		RETURNING id,oidc_subject,COALESCE(username,''),COALESCE(display_name,''),
 			COALESCE(email,''),email_verified,COALESCE(picture_url,''),status`,
 		user.ID, email, name).Scan(&user.ID, &user.Subject, &user.Username,
 		&user.DisplayName, &user.Email, &user.EmailVerified, &user.PictureURL, &user.Status)
-	return user, err
+	if err != nil {
+		return User{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return User{}, err
+	}
+	return user, nil
 }
 
 func (s *Store) CreateSession(ctx context.Context, userID uuid.UUID, rawToken, userAgent, ip string, expiresAt time.Time) error {
@@ -561,12 +643,35 @@ func (s *Store) ListContacts(ctx context.Context, ownerID uuid.UUID) ([]Contact,
 }
 
 func (s *Store) SaveContact(ctx context.Context, ownerID, contactID uuid.UUID, name, email, note string) (Contact, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Contact{}, err
+	}
+	defer tx.Rollback()
 	var contact Contact
-	err := s.db.QueryRowContext(ctx, `INSERT INTO contacts(id,owner_id,name,email,note) VALUES($1,$2,$3,$4,NULLIF($5,''))
+	err = tx.QueryRowContext(ctx, `UPDATE contacts SET name=$3,email=$4,note=NULLIF($5,''),updated_at=now()
+		WHERE id=$1 AND owner_id=$2 RETURNING id,name,email,COALESCE(note,''),created_at,updated_at`,
+		contactID, ownerID, name, email, note).Scan(&contact.ID, &contact.Name, &contact.Email, &contact.Note, &contact.CreatedAt, &contact.UpdatedAt)
+	if err == nil {
+		if err := tx.Commit(); err != nil {
+			return Contact{}, err
+		}
+		return contact, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Contact{}, err
+	}
+	err = tx.QueryRowContext(ctx, `INSERT INTO contacts(id,owner_id,name,email,note) VALUES($1,$2,$3,$4,NULLIF($5,''))
 		ON CONFLICT(owner_id,email) DO UPDATE SET name=EXCLUDED.name,note=EXCLUDED.note,updated_at=now()
 		RETURNING id,name,email,COALESCE(note,''),created_at,updated_at`, contactID, ownerID, name, email, note).Scan(
 		&contact.ID, &contact.Name, &contact.Email, &contact.Note, &contact.CreatedAt, &contact.UpdatedAt)
-	return contact, err
+	if err != nil {
+		return Contact{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Contact{}, err
+	}
+	return contact, nil
 }
 
 func (s *Store) DeleteContact(ctx context.Context, ownerID, contactID uuid.UUID) error {
@@ -726,8 +831,9 @@ func (s *Store) ListEvents(ctx context.Context, userID, conversationID uuid.UUID
 		upper = leftSeq.Int64
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT conversation_id,seq,id,sender_id,event_type,payload,created_at
-		FROM conversation_events
+		SELECT e.conversation_id,e.seq,e.id,e.sender_id,COALESCE(u.email,''),
+			COALESCE(u.display_name,u.username,u.email,''),e.event_type,e.payload,e.created_at
+		FROM conversation_events e LEFT JOIN users u ON u.id=e.sender_id
 		WHERE conversation_id=$1 AND seq>$2 AND seq>=$3 AND seq<=$4
 		ORDER BY seq LIMIT $5`, conversationID, afterSeq, joinedSeq, upper, limit)
 	if err != nil {
@@ -738,7 +844,7 @@ func (s *Store) ListEvents(ctx context.Context, userID, conversationID uuid.UUID
 	for rows.Next() {
 		var event Event
 		var senderID uuid.NullUUID
-		if err := rows.Scan(&event.ConversationID, &event.Seq, &event.ID, &senderID,
+		if err := rows.Scan(&event.ConversationID, &event.Seq, &event.ID, &senderID, &event.SenderEmail, &event.SenderName,
 			&event.Type, &event.Payload, &event.CreatedAt); err != nil {
 			return nil, err
 		}
@@ -790,6 +896,9 @@ func (s *Store) AppendMessage(ctx context.Context, userID, conversationID, clien
 	}
 	payload, _ := json.Marshal(map[string]string{"text": text})
 	event := Event{ConversationID: conversationID, Seq: seq, ID: uuid.New(), SenderID: &userID, Type: "message.created", Payload: payload}
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(email,''),COALESCE(display_name,username,email,'') FROM users WHERE id=$1`, userID).Scan(&event.SenderEmail, &event.SenderName); err != nil {
+		return Event{}, err
+	}
 	if err := insertEvent(ctx, tx, &event, &clientEventID); err != nil {
 		return Event{}, err
 	}

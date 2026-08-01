@@ -4,7 +4,7 @@
 
 部署范围：单机、单个 Go 进程、单个 PostgreSQL 实例
 
-认证来源：`https://my.lsong.org` OIDC
+认证来源：原生客户端姓名+邮箱；Web 使用 `https://my.lsong.org` OIDC
 
 更新时间：2026-08-01
 
@@ -15,7 +15,7 @@ V1 采用以下组合：
 - Go HTTP/WebSocket 服务；
 - PostgreSQL 作为唯一持久化数据库；
 - 进程内 Hub 完成在线消息分发；
-- 通过 `https://my.lsong.org` 的 OIDC Authorization Code Flow 登录；
+- 原生客户端通过姓名和规范化邮箱登录，Web 通过 OIDC Authorization Code Flow 获取同样的资料；
 - 客户端使用会话内单调递增的 `seq` 同步历史和补齐离线消息；
 - 暂不引入 Redis、Kafka、NATS、独立用户系统或微服务。
 
@@ -74,7 +74,11 @@ PostgreSQL 是消息事实来源，WebSocket 只是低延迟通知通道。只�
 
 单机版不需要 Redis：所有 WebSocket 都在同一个 Go 进程内，Hub 可以直接按会话广播。如果进程在数据库提交后、WebSocket 广播前崩溃，客户端重连时会按 `seq` 从 PostgreSQL 补齐消息。
 
-## 4. OIDC 接入设计
+## 4. 登录与 OIDC 接入设计
+
+原生客户端调用 `POST /auth/email`，只提交 `name` 和 `email`。服务端规范化邮箱、创建或更新用户并签发本站 opaque session。Web 浏览器继续使用 OIDC，回调得到邮箱后也落到同一个用户；已有邮箱匹配必须唯一，否则拒绝自动归并。
+
+该简易流程不证明调用者拥有邮箱，只适用于受信环境或早期产品。公开部署应增加邮件验证码或在可信身份网关后开放。
 
 ### 4.1 已确认的 Provider 能力
 
@@ -342,10 +346,16 @@ GET  /api/users/search?email=name@example.com
 GET  /api/conversations
 POST /api/conversations
 PATCH /api/conversations/{id}
-DELETE /api/conversations/{id}
+DELETE /api/conversations/{id}                         # owner 删除整个会话
+POST /api/conversations/{id}/leave                     # 当前成员退出
 GET  /api/conversations/{id}/members
 POST /api/conversations/{id}/members
+PATCH /api/conversations/{id}/members/{userID}         # owner 修改角色
 DELETE /api/conversations/{id}/members/{userID}
+GET  /api/contacts
+POST /api/contacts
+PUT  /api/contacts/{contactID}
+DELETE /api/contacts/{contactID}
 GET  /api/conversations/{id}/events?after_seq=123&limit=100
 POST /api/conversations/{id}/messages
 POST /api/conversations/{id}/read

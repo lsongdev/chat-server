@@ -126,6 +126,12 @@ func (a *Auth) Callback(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	email, ok := normalizeEmail(claims.Email)
+	if !ok {
+		http.Error(w, "identity provider did not return a valid email", http.StatusUnauthorized)
+		return
+	}
+	claims.Email = email
 	user, err := a.store.UpsertOIDCUser(r.Context(), a.config.OIDCIssuer, claims)
 	if err != nil {
 		serverError(w, r, err)
@@ -164,6 +170,10 @@ func (a *Auth) EmailLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := a.store.UpsertEmailUser(r.Context(), input.Name, email)
 	if err != nil {
+		if errors.Is(err, ErrAmbiguousEmail) {
+			writeProblem(w, http.StatusConflict, "ambiguous_email", "this email belongs to more than one existing account")
+			return
+		}
 		serverError(w, r, err)
 		return
 	}

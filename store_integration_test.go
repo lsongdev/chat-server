@@ -93,6 +93,25 @@ func TestStoreConversationFlow(t *testing.T) {
 	if err != nil || len(members) != 2 {
 		t.Fatalf("unexpected member list: %#v %v", members, err)
 	}
+	updatedMember, roleEvent, err := store.UpdateMemberRole(ctx, creator.ID, conversation.ID, member.ID, "admin")
+	if err != nil || updatedMember.Role != "admin" || roleEvent.Type != "member.role_changed" {
+		t.Fatalf("role update failed: %#v %#v %v", updatedMember, roleEvent, err)
+	}
+	contact, err := store.SaveContact(ctx, creator.ID, uuid.New(), "Member", memberEmail, "met at Flame")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contacts, err := store.ListContacts(ctx, creator.ID)
+	if err != nil || len(contacts) != 1 || contacts[0].LinkedUser == nil || *contacts[0].LinkedUser != member.ID {
+		t.Fatalf("unexpected contacts: %#v %v", contacts, err)
+	}
+	contact, err = store.SaveContact(ctx, creator.ID, contact.ID, "Best member", memberEmail, "updated")
+	if err != nil || contact.Name != "Best member" {
+		t.Fatalf("contact update failed: %#v %v", contact, err)
+	}
+	if err := store.DeleteContact(ctx, creator.ID, contact.ID); err != nil {
+		t.Fatal(err)
+	}
 	left, newOwner, err := store.LeaveConversation(ctx, creator.ID, conversation.ID)
 	if err != nil || left.Type != "member.left" || newOwner == nil || *newOwner != member.ID {
 		t.Fatalf("owner transfer on leave failed: %#v %v %v", left, newOwner, err)
@@ -114,5 +133,41 @@ func TestStoreConversationFlow(t *testing.T) {
 	}
 	if _, err := store.ListEvents(ctx, third.ID, conversation.ID, 0, 100); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("removed member retained access: %v", err)
+	}
+	deletedMembers, err := store.DeleteConversation(ctx, member.ID, conversation.ID)
+	if err != nil || len(deletedMembers) != 3 {
+		t.Fatalf("conversation delete failed: %#v %v", deletedMembers, err)
+	}
+}
+
+func TestEmailAndOIDCIdentityConverge(t *testing.T) {
+	databaseURL := os.Getenv("CHAT_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("CHAT_TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	store, err := OpenStore(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	email := "identity-" + uuid.NewString() + "@example.com"
+	native, err := store.UpsertEmailUser(ctx, "Native Name", email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	browser, err := store.UpsertOIDCUser(ctx, "https://issuer.example", OIDCClaims{Subject: uuid.NewString(), Name: "Browser Name", Email: email, EmailVerified: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := store.UpsertEmailUser(ctx, "Latest Name", strings.ToUpper(email))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if native.ID != browser.ID || browser.ID != again.ID {
+		t.Fatalf("login methods created different users: %s %s %s", native.ID, browser.ID, again.ID)
 	}
 }
