@@ -25,6 +25,7 @@
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
+#root { height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, sans-serif; }
 button, input, textarea { font: inherit; border-radius: 9px; }
 button { border: 0; padding: 9px 15px; background: var(--text); color: var(--bg); font-weight: 650; cursor: pointer; }
