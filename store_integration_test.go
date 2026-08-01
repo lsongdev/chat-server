@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,15 +30,17 @@ func TestStoreConversationFlow(t *testing.T) {
 	}
 	testID := uuid.NewString()
 
-	creator, err := store.UpsertOIDCUser(ctx, "https://issuer.example", OIDCClaims{Subject: "creator-" + testID, Name: "Creator"})
+	creatorEmail := "creator-" + testID + "@example.com"
+	creator, err := store.UpsertOIDCUser(ctx, "https://issuer.example", OIDCClaims{Subject: "creator-" + testID, Name: "Creator", Email: creatorEmail, EmailVerified: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	member, err := store.UpsertOIDCUser(ctx, "https://issuer.example", OIDCClaims{Subject: "member-" + testID, Name: "Member"})
+	memberEmail := "member-" + testID + "@example.com"
+	member, err := store.UpsertOIDCUser(ctx, "https://issuer.example", OIDCClaims{Subject: "member-" + testID, Name: "Member", Email: memberEmail, EmailVerified: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	conversation, created, err := store.CreateConversation(ctx, creator.ID, "group", "Test group")
+	conversation, created, err := store.CreateConversation(ctx, creator.ID, "Test conversation")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,19 +48,19 @@ func TestStoreConversationFlow(t *testing.T) {
 		t.Fatalf("invalid creation event: %#v", created)
 	}
 
-	inviteToken := uuid.NewString() + uuid.NewString()
-	if err := store.CreateInvite(ctx, creator.ID, conversation.ID, inviteToken, time.Now().Add(time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	joinedConversationID, joined, err := store.AcceptInvite(ctx, member.ID, inviteToken, 1000)
+	lookup, err := store.FindUserByEmail(ctx, strings.ToUpper(memberEmail))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if joinedConversationID != conversation.ID || joined.Seq != 2 {
-		t.Fatalf("unexpected join result: %s %#v", joinedConversationID, joined)
+	if lookup.UserID != member.ID || lookup.Email != memberEmail {
+		t.Fatalf("unexpected email lookup: %#v", lookup)
 	}
-	if _, _, err := store.AcceptInvite(ctx, member.ID, inviteToken, 1000); !errors.Is(err, ErrInviteExpired) {
-		t.Fatalf("expected one-use invite to be exhausted, got %v", err)
+	added, joined, err := store.AddMemberByEmail(ctx, creator.ID, conversation.ID, strings.ToUpper(memberEmail), 1000)
+	if err != nil || added.UserID != member.ID || joined.Seq != 2 {
+		t.Fatalf("unexpected add result: %#v %#v %v", added, joined, err)
+	}
+	if _, _, err := store.AddMemberByEmail(ctx, creator.ID, conversation.ID, memberEmail, 1000); !errors.Is(err, ErrAlreadyMember) {
+		t.Fatalf("expected duplicate member add conflict, got %v", err)
 	}
 
 	clientMessageID := uuid.New()
@@ -82,7 +85,7 @@ func TestStoreConversationFlow(t *testing.T) {
 	if err := store.UpdateRead(ctx, member.ID, conversation.ID, message.Seq); err != nil {
 		t.Fatal(err)
 	}
-	renamed, err := store.RenameConversation(ctx, creator.ID, conversation.ID, "Renamed group")
+	renamed, err := store.RenameConversation(ctx, creator.ID, conversation.ID, "Renamed conversation")
 	if err != nil || renamed.Type != "conversation.renamed" {
 		t.Fatalf("rename failed: %#v %v", renamed, err)
 	}
@@ -94,7 +97,7 @@ func TestStoreConversationFlow(t *testing.T) {
 	if err != nil || left.Type != "member.left" || newOwner == nil || *newOwner != member.ID {
 		t.Fatalf("owner transfer on leave failed: %#v %v %v", left, newOwner, err)
 	}
-	third, err := store.UpsertOIDCUser(ctx, "https://issuer.example", OIDCClaims{Subject: "third-" + testID, Name: "Third"})
+	third, err := store.UpsertOIDCUser(ctx, "https://issuer.example", OIDCClaims{Subject: "third-" + testID, Name: "Third", Email: "third-" + testID + "@example.com"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,29 +114,5 @@ func TestStoreConversationFlow(t *testing.T) {
 	}
 	if _, err := store.ListEvents(ctx, third.ID, conversation.ID, 0, 100); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("removed member retained access: %v", err)
-	}
-
-	directOne, _, err := store.CreateConversation(ctx, creator.ID, "direct", "First direct")
-	if err != nil {
-		t.Fatal(err)
-	}
-	directInviteOne := uuid.NewString() + uuid.NewString()
-	if err := store.CreateInvite(ctx, creator.ID, directOne.ID, directInviteOne, time.Now().Add(time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := store.AcceptInvite(ctx, member.ID, directInviteOne, 1000); err != nil {
-		t.Fatal(err)
-	}
-	directTwo, _, err := store.CreateConversation(ctx, creator.ID, "direct", "Duplicate direct")
-	if err != nil {
-		t.Fatal(err)
-	}
-	directInviteTwo := uuid.NewString() + uuid.NewString()
-	if err := store.CreateInvite(ctx, creator.ID, directTwo.ID, directInviteTwo, time.Now().Add(time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	existingID, redirect, err := store.AcceptInvite(ctx, member.ID, directInviteTwo, 1000)
-	if err != nil || existingID != directOne.ID || redirect.Type != "conversation.redirected" {
-		t.Fatalf("duplicate direct was not redirected: %s %#v %v", existingID, redirect, err)
 	}
 }

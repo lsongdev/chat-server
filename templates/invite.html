@@ -3,32 +3,51 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>加入会话 · Flame Chat</title>
+  <meta name="color-scheme" content="light dark">
+  <title>加入会话 · Chat</title>
   <style>
-    :root { color-scheme: light dark; font: 16px/1.5 system-ui,sans-serif; }
-    body { margin: 0; min-height: 100vh; display:grid; place-items:center; background:#111827; color:#e5e7eb; }
-    main { width:min(420px,calc(100% - 32px)); padding:28px; border:1px solid #374151; border-radius:14px; background:#1f2937; }
-    button,a { font:inherit; padding:10px 14px; border-radius:8px; }
-    button { border:0; background:#2563eb; color:white; cursor:pointer; }
-    a { color:#93c5fd; }
-    #status { color:#fbbf24; }
+    :root { color-scheme:light dark; --bg:#fafafa; --card:#fff; --text:#18181b; --muted:#71717a; --line:#e4e4e7; --danger:#b91c1c; }
+    @media (prefers-color-scheme:dark) { :root { --bg:#09090b; --card:#18181b; --text:#fafafa; --muted:#a1a1aa; --line:#3f3f46; --danger:#f87171; } }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:15px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif; }
+    header,main { width:min(100% - 32px,720px); margin:auto; }
+    header { min-height:68px; display:flex; align-items:center; }
+    .brand { color:var(--text); font-size:19px; font-weight:760; letter-spacing:-.03em; text-decoration:none; }
+    .card { margin:20px 0; padding:24px; background:var(--card); border:1px solid var(--line); border-radius:14px; box-shadow:0 1px 2px rgb(0 0 0 / 3%); }
+    h1 { margin:0 0 4px; font-size:23px; letter-spacing:-.025em; }
+    p { margin:7px 0; }
+    .muted { color:var(--muted); }
+    .actions { display:flex; align-items:center; gap:10px; margin-top:18px; }
+    button,.button { padding:9px 15px; border-radius:9px; font:inherit; font-weight:650; text-decoration:none; cursor:pointer; }
+    button { color:var(--bg); background:var(--text); border:0; }
+    .button { color:var(--text); background:transparent; border:1px solid var(--line); }
+    #status { min-height:24px; margin-top:14px; color:var(--muted); }
+    #status.error { color:var(--danger); }
   </style>
 </head>
 <body>
+<header><a class="brand" href="/">Chat</a></header>
 <main>
-  <h1>加入会话</h1>
-  <p>确认后，你将成为这个会话的成员。</p>
-  <button id="accept">确认加入</button>
-  <a href="/">返回聊天</a>
-  <p id="status"></p>
+  <section class="card">
+    <h1>加入会话</h1>
+    <p class="muted">确认后，你将成为这个会话的成员。</p>
+    <div class="actions"><button id="accept" type="button">确认加入</button><a class="button" href="/">返回聊天</a></div>
+    <p id="status" role="status" aria-live="polite"></p>
+  </section>
 </main>
 <script>
-document.getElementById('accept').onclick = async () => {
-  const status = document.getElementById('status'); status.textContent = '正在加入…';
-  const response = await fetch('/api/invites/{{.Token}}/accept', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
-  if (response.ok) { location.href='/'; return; }
+document.getElementById('accept').onclick = async event => {
+  const button = event.currentTarget;
+  const status = document.getElementById('status');
+  button.disabled = true;
+  status.className = '';
+  status.textContent = '正在加入…';
+  const response = await fetch('/api/invites/{{.Token}}/accept', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+  if (response.ok) { location.href = '/'; return; }
   const problem = await response.json().catch(() => ({}));
+  status.className = 'error';
   status.textContent = problem.error?.message || '无法加入此会话';
+  button.disabled = false;
 };
 </script>
 </body>

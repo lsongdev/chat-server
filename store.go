@@ -21,7 +21,9 @@ var (
 	ErrNotFound        = errors.New("not found")
 	ErrForbidden       = errors.New("forbidden")
 	ErrInviteExpired   = errors.New("invite expired or exhausted")
-	ErrDirectFull      = errors.New("direct conversation already has two members")
+	ErrAmbiguousEmail  = errors.New("ambiguous email")
+	ErrAlreadyMember   = errors.New("already a member")
+	ErrMemberLimit     = errors.New("member limit reached")
 	ErrInvalidSequence = errors.New("invalid sequence")
 	ErrConflict        = errors.New("conflict")
 )
@@ -184,21 +186,18 @@ func (s *Store) DeleteSession(ctx context.Context, rawToken string) error {
 	return err
 }
 
-func (s *Store) CreateConversation(ctx context.Context, creator uuid.UUID, kind, title string) (Conversation, Event, error) {
-	if kind != "direct" && kind != "group" {
-		return Conversation{}, Event{}, errors.New("invalid conversation kind")
-	}
+func (s *Store) CreateConversation(ctx context.Context, creator uuid.UUID, title string) (Conversation, Event, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Conversation{}, Event{}, err
 	}
 	defer tx.Rollback()
 
-	conversation := Conversation{ID: uuid.New(), Kind: kind, Title: title, LastSeq: 1, LastReadSeq: 1, JoinedSeq: 1, Role: "owner", Status: "active"}
+	conversation := Conversation{ID: uuid.New(), Title: title, LastSeq: 1, LastReadSeq: 1, JoinedSeq: 1, Role: "owner", Status: "active"}
 	if err := tx.QueryRowContext(ctx, `
-		INSERT INTO conversations(id,kind,title,created_by,last_seq)
-		VALUES($1,$2,NULLIF($3,''),$4,1)
-		RETURNING updated_at`, conversation.ID, kind, title, creator).Scan(&conversation.UpdatedAt); err != nil {
+		INSERT INTO conversations(id,title,created_by,last_seq)
+		VALUES($1,NULLIF($2,''),$3,1)
+		RETURNING updated_at`, conversation.ID, title, creator).Scan(&conversation.UpdatedAt); err != nil {
 		return Conversation{}, Event{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -211,7 +210,7 @@ func (s *Store) CreateConversation(ctx context.Context, creator uuid.UUID, kind,
 		VALUES($1,$2,$3,1)`, uuid.New(), conversation.ID, creator); err != nil {
 		return Conversation{}, Event{}, err
 	}
-	payload, _ := json.Marshal(map[string]any{"kind": kind, "title": title, "created_by": creator})
+	payload, _ := json.Marshal(map[string]any{"title": title, "created_by": creator})
 	event := Event{ConversationID: conversation.ID, Seq: 1, ID: uuid.New(), SenderID: &creator, Type: "conversation.created", Payload: payload}
 	if err := insertEvent(ctx, tx, &event, nil); err != nil {
 		return Conversation{}, Event{}, err
@@ -224,7 +223,7 @@ func (s *Store) CreateConversation(ctx context.Context, creator uuid.UUID, kind,
 
 func (s *Store) ListConversations(ctx context.Context, userID uuid.UUID) ([]Conversation, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT c.id,c.kind,COALESCE(c.title,''),c.last_seq,m.last_read_seq,m.joined_seq,m.role,m.status,c.updated_at
+		SELECT c.id,COALESCE(c.title,''),c.last_seq,m.last_read_seq,m.joined_seq,m.role,m.status,c.updated_at
 		FROM conversation_members m JOIN conversations c ON c.id=m.conversation_id
 		WHERE m.user_id=$1 AND m.status IN ('active','left')
 		ORDER BY c.updated_at DESC`, userID)
@@ -235,7 +234,7 @@ func (s *Store) ListConversations(ctx context.Context, userID uuid.UUID) ([]Conv
 	var conversations []Conversation
 	for rows.Next() {
 		var conversation Conversation
-		if err := rows.Scan(&conversation.ID, &conversation.Kind, &conversation.Title,
+		if err := rows.Scan(&conversation.ID, &conversation.Title,
 			&conversation.LastSeq, &conversation.LastReadSeq, &conversation.JoinedSeq, &conversation.Role,
 			&conversation.Status, &conversation.UpdatedAt); err != nil {
 			return nil, err
@@ -256,7 +255,7 @@ func (s *Store) ListMembers(ctx context.Context, userID, conversationID uuid.UUI
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT m.user_id,COALESCE(u.username,''),COALESCE(u.display_name,''),
-			COALESCE(u.picture_url,''),m.role,m.status,m.joined_seq
+			COALESCE(u.email,''),u.email_verified,COALESCE(u.picture_url,''),m.role,m.status,m.joined_seq
 		FROM conversation_members m JOIN users u ON u.id=m.user_id
 		WHERE m.conversation_id=$1
 		ORDER BY (m.status='active') DESC,m.joined_at`, conversationID)
@@ -268,12 +267,134 @@ func (s *Store) ListMembers(ctx context.Context, userID, conversationID uuid.UUI
 	for rows.Next() {
 		var member Member
 		if err := rows.Scan(&member.UserID, &member.Username, &member.DisplayName,
-			&member.PictureURL, &member.Role, &member.Status, &member.JoinedSeq); err != nil {
+			&member.Email, &member.EmailVerified, &member.PictureURL, &member.Role, &member.Status, &member.JoinedSeq); err != nil {
 			return nil, err
 		}
 		members = append(members, member)
 	}
 	return members, rows.Err()
+}
+
+func (s *Store) FindUserByEmail(ctx context.Context, email string) (UserLookup, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id,COALESCE(username,''),COALESCE(display_name,''),email,email_verified,COALESCE(picture_url,'')
+		FROM users WHERE lower(email)=lower($1) AND status='active' ORDER BY id LIMIT 2`, email)
+	if err != nil {
+		return UserLookup{}, err
+	}
+	defer rows.Close()
+	var matches []UserLookup
+	for rows.Next() {
+		var match UserLookup
+		if err := rows.Scan(&match.UserID, &match.Username, &match.DisplayName, &match.Email,
+			&match.EmailVerified, &match.PictureURL); err != nil {
+			return UserLookup{}, err
+		}
+		matches = append(matches, match)
+	}
+	if err := rows.Err(); err != nil {
+		return UserLookup{}, err
+	}
+	if len(matches) == 0 {
+		return UserLookup{}, ErrNotFound
+	}
+	if len(matches) > 1 {
+		return UserLookup{}, ErrAmbiguousEmail
+	}
+	return matches[0], nil
+}
+
+func (s *Store) AddMemberByEmail(ctx context.Context, actorID, conversationID uuid.UUID, email string, maxMembers int) (Member, Event, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Member{}, Event{}, err
+	}
+	defer tx.Rollback()
+
+	var seq int64
+	if err := tx.QueryRowContext(ctx, `SELECT last_seq FROM conversations WHERE id=$1 FOR UPDATE`, conversationID).Scan(&seq); errors.Is(err, sql.ErrNoRows) {
+		return Member{}, Event{}, ErrNotFound
+	} else if err != nil {
+		return Member{}, Event{}, err
+	}
+	var allowed bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT status='active' AND role IN ('owner','admin') FROM conversation_members
+		WHERE conversation_id=$1 AND user_id=$2`, conversationID, actorID).Scan(&allowed); errors.Is(err, sql.ErrNoRows) || !allowed {
+		return Member{}, Event{}, ErrForbidden
+	} else if err != nil {
+		return Member{}, Event{}, err
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id,COALESCE(username,''),COALESCE(display_name,''),email,email_verified,COALESCE(picture_url,'')
+		FROM users WHERE lower(email)=lower($1) AND status='active' ORDER BY id LIMIT 2`, email)
+	if err != nil {
+		return Member{}, Event{}, err
+	}
+	var matches []Member
+	for rows.Next() {
+		var member Member
+		if err := rows.Scan(&member.UserID, &member.Username, &member.DisplayName, &member.Email,
+			&member.EmailVerified, &member.PictureURL); err != nil {
+			rows.Close()
+			return Member{}, Event{}, err
+		}
+		matches = append(matches, member)
+	}
+	if err := rows.Close(); err != nil {
+		return Member{}, Event{}, err
+	}
+	if len(matches) == 0 {
+		return Member{}, Event{}, ErrNotFound
+	}
+	if len(matches) > 1 {
+		return Member{}, Event{}, ErrAmbiguousEmail
+	}
+	member := matches[0]
+	var existingStatus string
+	err = tx.QueryRowContext(ctx, `SELECT status FROM conversation_members WHERE conversation_id=$1 AND user_id=$2`, conversationID, member.UserID).Scan(&existingStatus)
+	if err == nil && existingStatus == "active" {
+		return Member{}, Event{}, ErrAlreadyMember
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return Member{}, Event{}, err
+	}
+	var activeCount int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM conversation_members WHERE conversation_id=$1 AND status='active'`, conversationID).Scan(&activeCount); err != nil {
+		return Member{}, Event{}, err
+	}
+	if activeCount >= maxMembers {
+		return Member{}, Event{}, ErrMemberLimit
+	}
+
+	seq++
+	if _, err := tx.ExecContext(ctx, `UPDATE conversations SET last_seq=$2,updated_at=now() WHERE id=$1`, conversationID, seq); err != nil {
+		return Member{}, Event{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO conversation_members(conversation_id,user_id,role,joined_seq,last_read_seq,status,left_seq)
+		VALUES($1,$2,'member',$3,$3,'active',NULL)
+		ON CONFLICT (conversation_id,user_id) DO UPDATE SET
+			role='member',joined_seq=EXCLUDED.joined_seq,last_read_seq=EXCLUDED.last_read_seq,
+			status='active',left_seq=NULL,joined_at=now(),updated_at=now()`, conversationID, member.UserID, seq); err != nil {
+		return Member{}, Event{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO conversation_member_periods(id,conversation_id,user_id,joined_seq)
+		VALUES($1,$2,$3,$4)`, uuid.New(), conversationID, member.UserID, seq); err != nil {
+		return Member{}, Event{}, err
+	}
+	member.Role, member.Status, member.JoinedSeq = "member", "active", seq
+	payload, _ := json.Marshal(map[string]any{"user_id": member.UserID, "email": member.Email, "role": member.Role})
+	event := Event{ConversationID: conversationID, Seq: seq, ID: uuid.New(), SenderID: &actorID, Type: "member.joined", Payload: payload}
+	if err := insertEvent(ctx, tx, &event, nil); err != nil {
+		return Member{}, Event{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Member{}, Event{}, err
+	}
+	return member, event, nil
 }
 
 func (s *Store) RenameConversation(ctx context.Context, actorID, conversationID uuid.UUID, title string) (Event, error) {
@@ -596,8 +717,8 @@ func (s *Store) AcceptInvite(ctx context.Context, userID uuid.UUID, rawToken str
 		return uuid.Nil, Event{}, err
 	}
 
-	var kind string
-	if err := tx.QueryRowContext(ctx, `SELECT kind FROM conversations WHERE id=$1 FOR UPDATE`, conversationID).Scan(&kind); err != nil {
+	var lockedID uuid.UUID
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM conversations WHERE id=$1 FOR UPDATE`, conversationID).Scan(&lockedID); err != nil {
 		return uuid.Nil, Event{}, err
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT user_id::text FROM conversation_members WHERE conversation_id=$1 AND status='active' ORDER BY user_id::text`, conversationID)
@@ -615,32 +736,7 @@ func (s *Store) AcceptInvite(ctx context.Context, userID uuid.UUID, rawToken str
 	}
 	rows.Close()
 	if len(activeMemberIDs) >= maxMembers {
-		return uuid.Nil, Event{}, ErrConflict
-	}
-	if kind == "direct" {
-		if len(activeMemberIDs) >= 2 {
-			return uuid.Nil, Event{}, ErrDirectFull
-		}
-		if len(activeMemberIDs) == 1 && activeMemberIDs[0] != userID.String() {
-			keyParts := []string{activeMemberIDs[0], userID.String()}
-			sort.Strings(keyParts)
-			var existingID uuid.UUID
-			err := tx.QueryRowContext(ctx, `SELECT id FROM conversations WHERE direct_key=$1 AND id<>$2`, strings.Join(keyParts, ":"), conversationID).Scan(&existingID)
-			if err == nil {
-				redirectedFrom := conversationID
-				if _, err := tx.ExecContext(ctx, `DELETE FROM conversations WHERE id=$1`, redirectedFrom); err != nil {
-					return uuid.Nil, Event{}, err
-				}
-				if err := tx.Commit(); err != nil {
-					return uuid.Nil, Event{}, err
-				}
-				payload, _ := json.Marshal(map[string]any{"conversation_id": existingID})
-				return existingID, Event{ConversationID: redirectedFrom, ID: uuid.New(), Type: "conversation.redirected", Payload: payload}, nil
-			}
-			if !errors.Is(err, sql.ErrNoRows) {
-				return uuid.Nil, Event{}, err
-			}
-		}
+		return uuid.Nil, Event{}, ErrMemberLimit
 	}
 	var seq int64
 	if err := tx.QueryRowContext(ctx, `
@@ -671,27 +767,6 @@ func (s *Store) AcceptInvite(ctx context.Context, userID uuid.UUID, rawToken str
 		INSERT INTO conversation_member_periods(id,conversation_id,user_id,joined_seq)
 		VALUES($1,$2,$3,$4)`, uuid.New(), conversationID, userID, seq); err != nil {
 		return uuid.Nil, Event{}, err
-	}
-	if kind == "direct" {
-		var memberIDs []string
-		rows, err := tx.QueryContext(ctx, `SELECT user_id::text FROM conversation_members WHERE conversation_id=$1 AND status='active' ORDER BY user_id::text`, conversationID)
-		if err != nil {
-			return uuid.Nil, Event{}, err
-		}
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err != nil {
-				rows.Close()
-				return uuid.Nil, Event{}, err
-			}
-			memberIDs = append(memberIDs, id)
-		}
-		rows.Close()
-		if len(memberIDs) == 2 {
-			if _, err := tx.ExecContext(ctx, `UPDATE conversations SET direct_key=$2 WHERE id=$1`, conversationID, strings.Join(memberIDs, ":")); err != nil {
-				return uuid.Nil, Event{}, err
-			}
-		}
 	}
 	payload, _ := json.Marshal(map[string]any{"user_id": userID, "role": memberRole})
 	event := Event{ConversationID: conversationID, Seq: seq, ID: uuid.New(), SenderID: &userID, Type: "member.joined", Payload: payload}

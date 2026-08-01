@@ -15,12 +15,12 @@ type User struct {
 	Email         string    `json:"email,omitempty"`
 	EmailVerified bool      `json:"email_verified"`
 	PictureURL    string    `json:"picture_url,omitempty"`
+	AvatarURL     string    `json:"avatar_url"`
 	Status        string    `json:"status"`
 }
 
 type Conversation struct {
 	ID          uuid.UUID `json:"id"`
-	Kind        string    `json:"kind"`
 	Title       string    `json:"title,omitempty"`
 	LastSeq     int64     `json:"last_seq"`
 	LastReadSeq int64     `json:"last_read_seq"`
@@ -31,13 +31,26 @@ type Conversation struct {
 }
 
 type Member struct {
-	UserID      uuid.UUID `json:"user_id"`
-	Username    string    `json:"username,omitempty"`
-	DisplayName string    `json:"display_name,omitempty"`
-	PictureURL  string    `json:"picture_url,omitempty"`
-	Role        string    `json:"role"`
-	Status      string    `json:"status"`
-	JoinedSeq   int64     `json:"joined_seq"`
+	UserID        uuid.UUID `json:"user_id"`
+	Username      string    `json:"username,omitempty"`
+	DisplayName   string    `json:"display_name,omitempty"`
+	Email         string    `json:"email,omitempty"`
+	EmailVerified bool      `json:"email_verified"`
+	PictureURL    string    `json:"picture_url,omitempty"`
+	AvatarURL     string    `json:"avatar_url"`
+	Role          string    `json:"role"`
+	Status        string    `json:"status"`
+	JoinedSeq     int64     `json:"joined_seq"`
+}
+
+type UserLookup struct {
+	UserID        uuid.UUID `json:"user_id"`
+	Username      string    `json:"username,omitempty"`
+	DisplayName   string    `json:"display_name,omitempty"`
+	Email         string    `json:"email"`
+	EmailVerified bool      `json:"email_verified"`
+	PictureURL    string    `json:"picture_url,omitempty"`
+	AvatarURL     string    `json:"avatar_url"`
 }
 
 type Event struct {

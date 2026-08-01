@@ -28,7 +28,7 @@ func NewAPI(store *Store, hub *Hub, cfg Config) *API {
 
 func (a *API) Me(w http.ResponseWriter, r *http.Request) {
 	user, _ := currentUser(r.Context())
-	writeJSON(w, http.StatusOK, user)
+	writeJSON(w, http.StatusOK, addUserAvatar(user))
 }
 
 func (a *API) ListConversations(w http.ResponseWriter, r *http.Request) {
@@ -47,22 +47,17 @@ func (a *API) ListConversations(w http.ResponseWriter, r *http.Request) {
 func (a *API) CreateConversation(w http.ResponseWriter, r *http.Request) {
 	user, _ := currentUser(r.Context())
 	var input struct {
-		Kind  string `json:"kind"`
 		Title string `json:"title"`
 	}
 	if err := decodeJSON(w, r, &input, 16<<10); err != nil {
 		return
 	}
-	input.Kind = strings.TrimSpace(input.Kind)
 	input.Title = strings.TrimSpace(input.Title)
-	if input.Kind == "" {
-		input.Kind = "group"
-	}
-	if (input.Kind != "group" && input.Kind != "direct") || len([]rune(input.Title)) > 100 {
-		writeProblem(w, http.StatusBadRequest, "invalid_conversation", "kind or title is invalid")
+	if len([]rune(input.Title)) > 100 {
+		writeProblem(w, http.StatusBadRequest, "invalid_conversation", "title is invalid")
 		return
 	}
-	conversation, event, err := a.store.CreateConversation(r.Context(), user.ID, input.Kind, input.Title)
+	conversation, event, err := a.store.CreateConversation(r.Context(), user.ID, input.Title)
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -70,6 +65,20 @@ func (a *API) CreateConversation(w http.ResponseWriter, r *http.Request) {
 	a.hub.AddUserConversation(user.ID, conversation.ID)
 	a.hub.Broadcast(conversation.ID, map[string]any{"type": "conversation.event", "event": event})
 	writeJSON(w, http.StatusCreated, conversation)
+}
+
+func (a *API) SearchUser(w http.ResponseWriter, r *http.Request) {
+	email, ok := normalizeEmail(r.URL.Query().Get("email"))
+	if !ok {
+		writeProblem(w, http.StatusBadRequest, "invalid_email", "enter a complete email address")
+		return
+	}
+	match, err := a.store.FindUserByEmail(r.Context(), email)
+	if err != nil {
+		handleStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, addLookupAvatar(match))
 }
 
 func (a *API) ListMembers(w http.ResponseWriter, r *http.Request) {
@@ -87,7 +96,38 @@ func (a *API) ListMembers(w http.ResponseWriter, r *http.Request) {
 	if members == nil {
 		members = []Member{}
 	}
+	for index := range members {
+		members[index] = addMemberAvatar(members[index])
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"members": members})
+}
+
+func (a *API) AddMember(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	conversationID, err := uuid.Parse(mux.Vars(r)["id"])
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_conversation_id", "conversation id is invalid")
+		return
+	}
+	var input struct {
+		Email string `json:"email"`
+	}
+	if err := decodeJSON(w, r, &input, 8<<10); err != nil {
+		return
+	}
+	email, ok := normalizeEmail(input.Email)
+	if !ok {
+		writeProblem(w, http.StatusBadRequest, "invalid_email", "enter a complete email address")
+		return
+	}
+	member, event, err := a.store.AddMemberByEmail(r.Context(), user.ID, conversationID, email, a.config.MaxConversationMembers)
+	if err != nil {
+		handleStoreError(w, r, err)
+		return
+	}
+	a.hub.AddUserConversation(member.UserID, conversationID)
+	a.hub.Broadcast(conversationID, map[string]any{"type": "conversation.event", "event": event})
+	writeJSON(w, http.StatusCreated, map[string]any{"member": addMemberAvatar(member), "event": event})
 }
 
 func (a *API) RenameConversation(w http.ResponseWriter, r *http.Request) {
@@ -261,10 +301,7 @@ func (a *API) AcceptInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.hub.AddUserConversation(user.ID, conversationID)
-	if event.Type == "conversation.redirected" {
-		a.hub.Broadcast(event.ConversationID, map[string]any{"type": "conversation.redirected", "from_conversation_id": event.ConversationID, "conversation_id": conversationID})
-		a.hub.RemoveConversation(event.ConversationID)
-	} else if event.ID != uuid.Nil {
+	if event.ID != uuid.Nil {
 		a.hub.Broadcast(conversationID, map[string]any{"type": "conversation.event", "event": event})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"conversation_id": conversationID})
@@ -302,20 +339,43 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, target any, maxBytes int
 func handleStoreError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, ErrForbidden):
-		writeProblem(w, http.StatusForbidden, "forbidden", "you cannot perform this action")
+		writeProblem(w, http.StatusForbidden, "forbidden", "你没有执行此操作的权限")
 	case errors.Is(err, ErrNotFound):
-		writeProblem(w, http.StatusNotFound, "not_found", "resource not found")
+		writeProblem(w, http.StatusNotFound, "not_found", "未找到对应用户或资源")
 	case errors.Is(err, ErrInviteExpired):
-		writeProblem(w, http.StatusGone, "invite_unavailable", "invite is expired or already used")
-	case errors.Is(err, ErrDirectFull):
-		writeProblem(w, http.StatusConflict, "direct_conversation_full", "direct conversation already has two members")
+		writeProblem(w, http.StatusGone, "invite_unavailable", "邀请链接已过期或已经使用")
+	case errors.Is(err, ErrAmbiguousEmail):
+		writeProblem(w, http.StatusConflict, "ambiguous_email", "该邮件地址对应多个用户，暂时无法添加")
+	case errors.Is(err, ErrAlreadyMember):
+		writeProblem(w, http.StatusConflict, "already_member", "该用户已经在会话中")
+	case errors.Is(err, ErrMemberLimit):
+		writeProblem(w, http.StatusConflict, "member_limit", "会话成员数量已达到上限")
 	case errors.Is(err, ErrInvalidSequence):
-		writeProblem(w, http.StatusBadRequest, "invalid_sequence", "sequence is invalid")
+		writeProblem(w, http.StatusBadRequest, "invalid_sequence", "消息序号无效")
 	case errors.Is(err, ErrConflict):
-		writeProblem(w, http.StatusConflict, "conflict", "operation conflicts with the current state")
+		writeProblem(w, http.StatusConflict, "conflict", "当前状态不允许此操作")
 	default:
 		serverError(w, r, err)
 	}
+}
+
+func normalizeEmail(value string) (string, bool) {
+	email := strings.ToLower(strings.TrimSpace(value))
+	if len(email) < 3 || len(email) > 254 || strings.IndexFunc(email, func(r rune) bool {
+		return r <= 0x20 || r == 0x7f
+	}) >= 0 {
+		return "", false
+	}
+	at := strings.LastIndexByte(email, '@')
+	if at < 1 || at > 64 || at == len(email)-1 || strings.Contains(email[:at], "@") {
+		return "", false
+	}
+	local, domain := email[:at], email[at+1:]
+	if strings.HasPrefix(local, ".") || strings.HasSuffix(local, ".") || strings.Contains(local, "..") ||
+		!strings.Contains(domain, ".") || strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") || strings.Contains(domain, "..") {
+		return "", false
+	}
+	return email, true
 }
 
 func serverError(w http.ResponseWriter, r *http.Request, err error) {

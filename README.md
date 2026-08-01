@@ -2,6 +2,10 @@
 
 一个单机优先的轻量聊天服务：Go、PostgreSQL、OIDC 和 WebSocket。消息与成员变化使用同一条会话事件序列，在线事件由进程内 Hub 分发，离线消息通过序号补齐。
 
+产品中只有“会话”这一种交流容器。会话管理员使用完整邮件地址精确查找并添加已经登录过 Chat 的用户。
+
+用户头像使用 Gravatar：服务端对规范化邮件地址计算 SHA-256，浏览器直接加载头像；未配置头像时显示稳定的 identicon。
+
 完整设计见 [docs/docs.md](docs/docs.md)。
 
 ## 准备 OIDC Client

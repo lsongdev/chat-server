@@ -42,16 +42,12 @@ CREATE INDEX oidc_login_attempts_expiry_idx ON oidc_login_attempts (expires_at);
 
 CREATE TABLE conversations (
     id uuid PRIMARY KEY,
-    kind text NOT NULL CHECK (kind IN ('direct', 'group')),
     title text,
-    direct_key text,
     created_by uuid NOT NULL REFERENCES users(id),
     last_seq bigint NOT NULL DEFAULT 0 CHECK (last_seq >= 0),
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE UNIQUE INDEX conversations_direct_key_idx
-    ON conversations (direct_key) WHERE direct_key IS NOT NULL;
 
 CREATE TABLE conversation_members (
     conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,

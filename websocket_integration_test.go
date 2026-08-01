@@ -31,7 +31,7 @@ func TestWebSocketMessageFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conversation, _, err := store.CreateConversation(ctx, user.ID, "group", "WebSocket test")
+	conversation, _, err := store.CreateConversation(ctx, user.ID, "WebSocket test")
 	if err != nil {
 		t.Fatal(err)
 	}

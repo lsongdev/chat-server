@@ -27,7 +27,8 @@ SQLite 在单机聊天服务中并非不可用，但本项目不采用它。原�
 
 - 用户通过现有用户中心登录，本站不保存密码；
 - 用户可以创建会话、添加或移除成员；
-- 私聊和群聊使用同一种会话模型；
+- 账户、成员、搜索结果与消息使用邮件地址对应的 Gravatar 头像；
+- 产品中只有会话这一种交流容器；
 - 在线成员通过 WebSocket 实时收到消息；
 - 离线或网络抖动后能够可靠补齐消息；
 - 同一个发送请求可以安全重试，不产生重复消息；
@@ -163,6 +164,10 @@ CREATE TABLE users (
 
 首次登录 JIT 创建用户，以后登录更新可变 profile 字段。会话成员、消息发送者等内部外键都引用 `users.id`，不要直接引用 email 或 username。
 
+邮件地址是面向用户的查找标识，不是数据库主键。成员管理只接受完整邮件地址并做大小写不敏感的精确匹配，不提供前缀或模糊搜索；若历史数据中同一邮件对应多个用户，接口拒绝选择，由管理员先处理冲突。
+
+界面头像使用 Gravatar。服务端将邮件地址去除首尾空白并转换为小写后计算 SHA-256，只向客户端返回 `https://gravatar.com/avatar/<hash>` URL，不把原始邮件地址发送给 Gravatar。请求固定使用 `rating=g`、96 像素和 `identicon` 默认头像；页面上的头像图片设置 `referrerpolicy=no-referrer`。没有邮件地址的账户使用空字符串哈希，因此仍能获得稳定的默认头像。数据库中的 `picture_url` 暂时保留以兼容 OIDC profile，但 V1 界面不使用它。
+
 浏览器不直接把 Provider access token 当作本站长期 Cookie。回调成功后创建本站 opaque session：
 
 ```sql
@@ -200,14 +205,12 @@ CREATE TABLE auth_sessions (
 
 ## 5. PostgreSQL 数据模型
 
-以下是核心逻辑模型，实际约束和索引以 `migrations/001_initial.sql` 为准；服务启动时只执行尚未记录在 `schema_migrations` 中的 migration。
+以下是核心逻辑模型，实际约束和索引以 `migrations/` 中的版本化文件为准；服务启动时只执行尚未记录在 `schema_migrations` 中的 migration。
 
 ```sql
 CREATE TABLE conversations (
     id          uuid PRIMARY KEY,
-    kind        text NOT NULL CHECK (kind IN ('direct', 'group')),
     title       text,
-    direct_key  text,
     created_by  uuid NOT NULL REFERENCES users(id),
     last_seq    bigint NOT NULL DEFAULT 0,
     created_at  timestamptz NOT NULL DEFAULT now(),
@@ -269,7 +272,8 @@ CREATE INDEX conversation_events_sender_idx
 - 消息、成员加入/退出/移除、改名共享 `conversation_events` 和同一条 `seq`；
 - `client_message_id` 映射为消息事件的 `client_event_id`，网络超时重试时保持不变；
 - `conversation_member_periods` 保存多次加入/退出区间；
-- 重复创建同一对用户的私聊时，第二个待加入会话被删除并重定向到既有私聊；
+- 所有会话使用相同的数据结构，成员数量从一人到配置上限；
+- 用户通过完整邮件地址精确查找并加入会话，服务端内部仍使用不可变的 `users.id` 建立成员关系；
 - 附件内容不进入数据库；V1 若加入附件，只保存元数据和受控 URL；
 - 用户离开后的历史可见性由 `joined_seq` 和成员状态控制。V1 重新加入时从新的 `joined_seq` 开始，不恢复离开期间的访问权。
 
@@ -333,12 +337,14 @@ GET  /auth/login
 GET  /auth/callback
 POST /auth/logout
 GET  /api/me
+GET  /api/users/search?email=name@example.com
 
 GET  /api/conversations
 POST /api/conversations
 PATCH /api/conversations/{id}
 DELETE /api/conversations/{id}
 GET  /api/conversations/{id}/members
+POST /api/conversations/{id}/members
 DELETE /api/conversations/{id}/members/{userID}
 GET  /api/conversations/{id}/events?after_seq=123&limit=100
 POST /api/conversations/{id}/messages
@@ -512,14 +518,14 @@ TRUST_PROXY_HEADERS=false
 - 会话创建和成员管理要求相应 role；
 - 所有时间由服务端生成；
 - 使用参数化 SQL；
-- 错误响应不暴露 SQL、token 校验细节或用户是否存在；
+- 错误响应不暴露 SQL 或 token 校验细节；只有用户主动提交完整邮件地址的精确查找接口会返回是否匹配；
 - 登录留有 session 记录，成员和管理变化进入持久化会话事件；
 - Cookie session 的普通 HTTP mutation 严格校验 `Origin`；
 - 服务端定期 ping，客户端必须 pong，清理失效连接。
 
 ## 13. 实现状态
 
-仓库已经实现 PostgreSQL migration、OIDC Discovery/PKCE 登录、本地 opaque session、邀请链接、私聊归并、成员生命周期、统一事件序列、幂等发送、进程内 Hub、WebSocket 有界队列、`after_seq` 补偿、已读游标、基础限速、Docker 镜像和 Compose 单机部署。
+仓库已经实现 PostgreSQL migration、OIDC Discovery/PKCE 登录、本地 opaque session、统一会话、按完整邮件地址精确添加成员、邀请链接、成员生命周期、统一事件序列、幂等发送、进程内 Hub、WebSocket 有界队列、`after_seq` 补偿、已读游标、基础限速、Docker 镜像和 Compose 单机部署。
 
 自动化验证覆盖纯单元测试、race detector、真实 PostgreSQL 17 的会话生命周期、模拟 OIDC Provider 的完整回调流程和真实 WebSocket 消息持久化/广播。发布生产环境前仍应在目标机器执行 10k 连接与混合写入压测、备份恢复演练和实际 `my.lsong.org` client 登录验收。
 
