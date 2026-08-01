@@ -52,6 +52,8 @@ POST /api/conversations
 {"title":"Project Flame"}
 ```
 
+`title` is required after trimming whitespace and is limited to 100 Unicode characters.
+
 ```json
 {
   "id":"6d2718e6-39ee-4144-ab8c-aaaf21c1a425",
@@ -66,7 +68,7 @@ POST /api/conversations
 ```
 
 - `GET /api/conversations` returns every active or previously-left conversation visible to the current user.
-- `PATCH /api/conversations/{id}` with `{"title":"New title"}` requires owner/admin.
+- `PATCH /api/conversations/{id}` with a non-empty `{"title":"New title"}` requires owner/admin.
 - `DELETE /api/conversations/{id}` permanently deletes the conversation for every member and requires owner.
 - `POST /api/conversations/{id}/leave` leaves it only for the current member and transfers ownership when necessary.
 

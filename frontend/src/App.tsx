@@ -1,22 +1,29 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from './api';
 import ChatPage from './pages/ChatPage';
 import InvitePage from './pages/InvitePage';
 import LoginPage from './pages/LoginPage';
 import type { User } from './types';
 
-function useRoute(): string {
+export type Navigate = (path: string, options?: { replace?: boolean }) => void;
+
+function useRoute(): { path: string; navigate: Navigate } {
   const [path, setPath] = useState(() => window.location.pathname);
   useEffect(() => {
     const onPop = () => setPath(window.location.pathname);
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
-  return path;
+  const navigate = useCallback<Navigate>((nextPath, options) => {
+    if (window.location.pathname === nextPath) return;
+    window.history[options?.replace ? 'replaceState' : 'pushState']({}, '', nextPath);
+    setPath(nextPath);
+  }, []);
+  return { path, navigate };
 }
 
 export default function App() {
-  const path = useRoute();
+  const { path, navigate } = useRoute();
   const [user, setUser] = useState<User | null | undefined>(undefined);
 
   useEffect(() => {
@@ -45,5 +52,5 @@ export default function App() {
   if (token) {
     return <InvitePage token={token} />;
   }
-  return <ChatPage user={user} />;
+  return <ChatPage user={user} path={path} navigate={navigate} />;
 }

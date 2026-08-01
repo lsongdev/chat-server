@@ -53,8 +53,8 @@ func (a *API) CreateConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	input.Title = strings.TrimSpace(input.Title)
-	if len([]rune(input.Title)) > 100 {
-		writeProblem(w, http.StatusBadRequest, "invalid_conversation", "title is invalid")
+	if input.Title == "" || len([]rune(input.Title)) > 100 {
+		writeProblem(w, http.StatusBadRequest, "invalid_conversation", "conversation title is required and must not exceed 100 characters")
 		return
 	}
 	conversation, event, err := a.store.CreateConversation(r.Context(), user.ID, input.Title)
@@ -144,8 +144,8 @@ func (a *API) RenameConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	input.Title = strings.TrimSpace(input.Title)
-	if len([]rune(input.Title)) > 100 {
-		writeProblem(w, http.StatusBadRequest, "invalid_title", "title is too long")
+	if input.Title == "" || len([]rune(input.Title)) > 100 {
+		writeProblem(w, http.StatusBadRequest, "invalid_title", "conversation title is required and must not exceed 100 characters")
 		return
 	}
 	event, err := a.store.RenameConversation(r.Context(), user.ID, conversationID, input.Title)

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { Navigate } from '../App';
 import { useChatClient } from '../useChatClient';
 import type { User } from '../types';
 import ChatModule from '../components/ChatModule';
@@ -24,35 +25,83 @@ function userLabel(user: User): string {
   return user.email || user.display_name || user.username || user.id;
 }
 
-export default function ChatPage({ user }: { user: User }) {
+function routeModule(path: string): ModuleID {
+  if (path === '/contacts') return 'contacts-module';
+  if (path === '/settings') return 'app-settings-module';
+  return 'chat-module';
+}
+
+function routeIsValid(path: string): boolean {
+  return path === '/chat' || path === '/contacts' || path === '/settings' || /^\/chat\/[^/]+$/.test(path);
+}
+
+export default function ChatPage({ user, path, navigate }: { user: User; path: string; navigate: Navigate }) {
   const chat = useChatClient();
-  const [activeModule, setActiveModule] = useState<ModuleID>('chat-module');
+  const [ready, setReady] = useState(false);
+  const { bootstrap, connect, conversations, dispatch, loadContacts, selectConversation, selected, showNotice } = chat;
+  const activeModule = routeModule(path);
+  const conversationMatch = path.match(/^\/chat\/([^/]+)$/);
+  const conversationID = conversationMatch?.[1] || null;
+
+  useEffect(() => {
+    if (!routeIsValid(path)) navigate('/chat', { replace: true });
+  }, [navigate, path]);
 
   useEffect(() => {
     let active = true;
-    chat
-      .bootstrap(user)
+    bootstrap(user)
       .then(() => {
-        if (active) chat.connect();
+        if (active) {
+          setReady(true);
+          connect();
+        }
       })
-      .catch((error: Error) => chat.showNotice(error.message, true));
+      .catch((error: Error) => showNotice(error.message, true));
     return () => {
       active = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [bootstrap, connect, showNotice, user]);
 
-  const switchModule = async (moduleID: ModuleID) => {
-    setActiveModule(moduleID);
-    if (moduleID === 'contacts-module') {
-      await chat.loadContacts().catch((error: Error) => chat.showNotice(error.message, true));
+  useEffect(() => {
+    if (!ready || activeModule !== 'contacts-module') return;
+    loadContacts().catch((error: Error) => showNotice(error.message, true));
+  }, [activeModule, loadContacts, ready, showNotice]);
+
+  useEffect(() => {
+    if (!ready || activeModule !== 'chat-module') return;
+    if (!conversationID) {
+      if (selected) dispatch({ type: 'selected', selected: null });
+      return;
     }
+    const conversation = conversations.find((item) => item.id === conversationID);
+    if (!conversation) {
+      showNotice('会话不存在、已删除或你已经离开。', true);
+      navigate('/chat', { replace: true });
+      return;
+    }
+    if (selected?.id !== conversation.id) {
+      selectConversation(conversation).catch((error: Error) => showNotice(error.message, true));
+    }
+  }, [activeModule, conversationID, conversations, dispatch, navigate, ready, selectConversation, selected, showNotice]);
+
+  const modulePath = (moduleID: ModuleID): string => {
+    if (moduleID === 'contacts-module') return '/contacts';
+    if (moduleID === 'app-settings-module') return '/settings';
+    return '/chat';
   };
 
   return (
     <div className="app-shell">
       <nav className="module-nav" aria-label="主导航">
-        <a className="nav-logo" href="/" aria-label="Chat">
+        <a
+          className="nav-logo"
+          href="/chat"
+          aria-label="Chat"
+          onClick={(event) => {
+            event.preventDefault();
+            navigate('/chat');
+          }}
+        >
           <img src="https://my.lsong.org/icon-192.png?v=2" alt="" />
         </a>
         {MODULES.map((mod) => (
@@ -62,7 +111,7 @@ export default function ChatPage({ user }: { user: User }) {
             type="button"
             data-module={mod.id}
             aria-label={mod.label}
-            onClick={() => switchModule(mod.id).catch((error: Error) => chat.showNotice(error.message, true))}
+            onClick={() => navigate(modulePath(mod.id))}
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d={mod.icon} />
@@ -75,7 +124,7 @@ export default function ChatPage({ user }: { user: User }) {
           type="button"
           data-module="app-settings-module"
           aria-label="Settings"
-          onClick={() => switchModule('app-settings-module')}
+          onClick={() => navigate('/settings')}
         >
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <circle cx="12" cy="12" r="3" />
@@ -96,7 +145,14 @@ export default function ChatPage({ user }: { user: User }) {
             {chat.notice.message}
           </div>
         )}
-        {activeModule === 'chat-module' && <ChatModule chat={chat} />}
+        {activeModule === 'chat-module' && (
+          <ChatModule
+            chat={chat}
+            conversationRouteActive={conversationID !== null}
+            onOpenConversation={(id) => navigate(`/chat/${id}`)}
+            onBackToList={() => navigate('/chat')}
+          />
+        )}
         {activeModule === 'contacts-module' && <ContactsModule chat={chat} />}
         {activeModule === 'app-settings-module' && <AppSettingsModule chat={chat} />}
       </div>

@@ -149,8 +149,9 @@ export function useChatClient() {
 
   const refreshConversations = useCallback(async (): Promise<Conversation[]> => {
     const result = await api<{ conversations: Conversation[] }>('/api/conversations');
-    dispatch({ type: 'conversations', conversations: result.conversations });
-    return result.conversations;
+    const activeConversations = result.conversations.filter((conversation) => conversation.status === 'active');
+    dispatch({ type: 'conversations', conversations: activeConversations });
+    return activeConversations;
   }, []);
 
   const syncEvents = useCallback(

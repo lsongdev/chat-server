@@ -18,6 +18,8 @@ chat-server/
 
 前端只通过 `fetch /api/*` 和 `WebSocket /ws` 与后端通信，Cookie 由后端 HttpOnly 设置，生产环境同源部署、由 Go 直接托管。
 
+Web 路由为 `/chat`（会话列表）、`/chat/{conversationID}`（聊天）、`/contacts` 和 `/settings`。Web 只展示 `status=active` 的会话；离开会话的历史可继续由原生客户端按协议处理。会话名称在创建和重命名时均为必填。
+
 ## 登录方式
 
 - iOS 和 Web：`POST /auth/email`，JSON 只包含 `name` 和 `email`，成功后使用服务端设置的 HttpOnly Cookie。

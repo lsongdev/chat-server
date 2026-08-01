@@ -19,7 +19,17 @@ function userLabel(user: Pick<User, 'id' | 'email' | 'display_name' | 'username'
   return user.email || user.display_name || user.username || user.id;
 }
 
-export default function ChatModule({ chat }: { chat: ChatClient }) {
+export default function ChatModule({
+  chat,
+  conversationRouteActive,
+  onOpenConversation,
+  onBackToList,
+}: {
+  chat: ChatClient;
+  conversationRouteActive: boolean;
+  onOpenConversation: (conversationID: string) => void;
+  onBackToList: () => void;
+}) {
   const { selected, user } = chat;
   const [createTitle, setCreateTitle] = useState('');
   const [renameTitle, setRenameTitle] = useState('');
@@ -278,13 +288,13 @@ export default function ChatModule({ chat }: { chat: ChatClient }) {
   const empty = events.length === 0 ? (selected ? '还没有消息' : '创建或选择一个会话开始聊天') : null;
 
   return (
-    <section className="module chat-module">
+    <section className={`module chat-module ${conversationRouteActive ? 'conversation-open' : 'conversation-list'}`}>
       <aside className="card sidebar">
         <div className="sidebar-head">
           <h2>会话</h2>
           <p className="muted small">每个会话都可以加入任意成员。</p>
           <form id="create" className="create-form" onSubmit={createSubmit}>
-            <input id="title" maxLength={100} placeholder="会话名称（可选）" aria-label="会话名称" value={createTitle} onChange={(event) => setCreateTitle(event.target.value)} />
+            <input id="title" maxLength={100} placeholder="会话名称" aria-label="会话名称" required value={createTitle} onChange={(event) => setCreateTitle(event.target.value)} />
             <button type="submit">创建会话</button>
           </form>
         </div>
@@ -299,7 +309,7 @@ export default function ChatModule({ chat }: { chat: ChatClient }) {
               <button
                 type="button"
                 className={`conversation-button${chat.selected?.id === conversation.id ? ' active' : ''}`}
-                onClick={() => chat.selectConversation(conversation).catch((error: Error) => chat.showNotice(error.message, true))}
+                onClick={() => onOpenConversation(conversation.id)}
               >
                 <span className="conversation-row">
                   <span>{titleOf(conversation)}</span>
@@ -316,6 +326,9 @@ export default function ChatModule({ chat }: { chat: ChatClient }) {
       </aside>
       <main className="card chat">
         <header className="chat-head">
+          <button className="mobile-back secondary" type="button" aria-label="返回会话列表" onClick={onBackToList}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
+          </button>
           <div>
             <h2 id="conversation-title">{selected ? titleOf(selected) : '请选择会话'}</h2>
             <p id="connection" className="muted small">
@@ -341,7 +354,7 @@ export default function ChatModule({ chat }: { chat: ChatClient }) {
                 <form className="inline-form" onSubmit={renameSubmit}>
                   <div className="field">
                     <label htmlFor="rename-title">名称</label>
-                    <input id="rename-title" maxLength={100} value={renameTitle} onChange={(event) => setRenameTitle(event.target.value)} disabled={!canManage} />
+                    <input id="rename-title" maxLength={100} required value={renameTitle} onChange={(event) => setRenameTitle(event.target.value)} disabled={!canManage} />
                   </div>
                   <button type="submit" disabled={!canManage}>
                     保存
