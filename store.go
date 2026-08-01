@@ -135,6 +135,11 @@ func (s *Store) ConsumeLoginAttempt(ctx context.Context, state string) (LoginAtt
 }
 
 func (s *Store) UpsertOIDCUser(ctx context.Context, issuer string, claims OIDCClaims) (User, error) {
+	email, ok := normalizeEmail(claims.Email)
+	if !ok {
+		return User{}, ErrConflict
+	}
+	claims.Email = email
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return User{}, err

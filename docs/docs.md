@@ -138,7 +138,7 @@ Browser                 Chat Server                 my.lsong.org
 - 使用 Discovery/JWKS 校验 ES256 签名；
 - 严格校验 `iss == https://my.lsong.org`；
 - 校验 `aud` 包含本站 `client_id`，以及 `exp`、`iat`、`nonce`；
-- 使用 OIDC `sub` 作为稳定外部身份，不用 email 作为主键；
+- OIDC `sub` 只标识登录提供方身份；聊天业务跨端以规范化 email 唯一识别用户，数据库仍以 UUID 作为外键；
 - 如果业务要求必须有可信邮箱，则要求 `email_verified == true`；
 - OAuth/OIDC 错误只记录必要字段，禁止记录 code、token、client secret。
 
@@ -155,7 +155,7 @@ CREATE TABLE users (
     oidc_subject       text NOT NULL,
     username           text,
     display_name       text,
-    email              text,
+    email              text NOT NULL,
     email_verified     boolean NOT NULL DEFAULT false,
     picture_url        text,
     status             text NOT NULL DEFAULT 'active',
@@ -168,7 +168,7 @@ CREATE TABLE users (
 
 首次登录 JIT 创建用户，以后登录更新可变 profile 字段。会话成员、消息发送者等内部外键都引用 `users.id`，不要直接引用 email 或 username。
 
-邮件地址是面向用户的查找标识，不是数据库主键。成员管理只接受完整邮件地址并做大小写不敏感的精确匹配，不提供前缀或模糊搜索；若历史数据中同一邮件对应多个用户，接口拒绝选择，由管理员先处理冲突。
+邮件地址是跨客户端的唯一业务身份，数据库 UUID 只是内部主键和外键。`lower(email)` 有唯一索引；所有入口先去除空白并转小写。成员管理只接受完整邮件地址并做大小写不敏感的精确匹配，不提供前缀或模糊搜索。升级旧数据库前必须先处理缺失或重复邮箱，否则唯一身份 migration 会拒绝执行。
 
 界面头像使用 Gravatar。服务端将邮件地址去除首尾空白并转换为小写后计算 SHA-256，只向客户端返回 `https://gravatar.com/avatar/<hash>` URL，不把原始邮件地址发送给 Gravatar。请求固定使用 `rating=g`、96 像素和 `identicon` 默认头像；页面上的头像图片设置 `referrerpolicy=no-referrer`。没有邮件地址的账户使用空字符串哈希，因此仍能获得稳定的默认头像。数据库中的 `picture_url` 暂时保留以兼容 OIDC profile，但 V1 界面不使用它。
 

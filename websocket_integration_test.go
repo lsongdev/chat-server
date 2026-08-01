@@ -27,7 +27,7 @@ func TestWebSocketMessageFlow(t *testing.T) {
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	user, err := store.UpsertOIDCUser(ctx, "https://ws-test.example", OIDCClaims{Subject: uuid.NewString(), Name: "WS User"})
+	user, err := store.UpsertOIDCUser(ctx, "https://ws-test.example", OIDCClaims{Subject: uuid.NewString(), Name: "WS User", Email: "ws-" + uuid.NewString() + "@example.com"})
 	if err != nil {
 		t.Fatal(err)
 	}
