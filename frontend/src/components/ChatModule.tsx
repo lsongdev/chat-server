@@ -44,6 +44,7 @@ export default function ChatModule({
   const [message, setMessage] = useState('');
   const [confirmRemove, setConfirmRemove] = useState<Set<string>>(new Set());
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const messageRef = useRef('');
   const eventsRef = useRef<HTMLElement>(null);
 
   const events = useMemo(() => {
@@ -92,9 +93,10 @@ export default function ChatModule({
 
   const composerSubmit = (event: React.FormEvent) => {
     event.preventDefault();
-    const text = message;
+    const text = messageRef.current;
     if (!text) return;
     if (!chat.sendMessage(text)) return;
+    messageRef.current = '';
     setMessage('');
     requestAnimationFrame(() => {
       const el = composerRef.current;
@@ -494,11 +496,12 @@ export default function ChatModule({
             disabled={!composerEnabled}
             value={message}
             onChange={(event) => {
+              messageRef.current = event.target.value;
               setMessage(event.target.value);
               resizeComposer();
             }}
             onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
+              if (event.key === 'Enter' && !event.shiftKey && !event.repeat && !event.nativeEvent.isComposing) {
                 event.preventDefault();
                 event.currentTarget.form?.requestSubmit();
               }
