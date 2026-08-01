@@ -55,8 +55,17 @@
     .avatar { width: 40px; height: 40px; flex: none; border-radius: 50%; background: var(--line); object-fit: cover; }
     .avatar.small { width: 30px; height: 30px; }
     .identity-row { display: flex; min-width: 0; align-items: center; gap: 10px; }
-    .workspace { width: min(100% - 32px, 1180px); height: calc(100vh - 100px); min-height: 620px; margin: 16px auto; display: grid; grid-template-columns: 290px minmax(0, 1fr); gap: 16px; }
+    .workspace { width: min(100% - 32px, 1240px); height: calc(100vh - 100px); min-height: 620px; margin: 16px auto; display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 16px; }
     .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 1px 2px rgb(0 0 0 / 3%); }
+    .module-nav { align-self: start; padding: 10px; }
+    .module-button { display: flex; width: 100%; align-items: center; gap: 10px; padding: 11px 12px; color: var(--text); background: transparent; text-align: left; }
+    .module-button + .module-button { margin-top: 3px; }
+    .module-button:hover { background: var(--bg); }
+    .module-button.active { color: var(--accent); background: var(--accent-soft); }
+    .module-icon { width: 22px; text-align: center; }
+    .module { min-width: 0; min-height: 0; }
+    .module[hidden] { display: none; }
+    .chat-module { display: grid; grid-template-columns: 290px minmax(0, 1fr); gap: 16px; }
     .sidebar { display: flex; min-height: 0; flex-direction: column; overflow: hidden; }
     .sidebar-head { padding: 20px; border-bottom: 1px solid var(--line); }
     .sidebar-head p { margin-top: 3px; }
@@ -100,23 +109,38 @@
     .message-row.mine .message { color: #fff; background: var(--accent); border-color: var(--accent); }
     .system { align-self: center; color: var(--muted); font-size: 13px; }
     .empty { margin: auto; color: var(--muted); text-align: center; }
-    #composer { display: flex; gap: 8px; padding: 15px 20px; border-top: 1px solid var(--line); }
-    #composer button { margin: 0; }
+    #composer { display: flex; min-height: 70px; max-height: 180px; align-items: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--line); }
+    #composer textarea { min-height: 42px; max-height: 140px; resize: none; overflow-y: auto; line-height: 1.45; }
+    #composer button { min-height: 42px; margin: 0; }
+    .page { height: 100%; min-height: 0; overflow: auto; padding: 24px; }
+    .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
+    .contacts-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; }
+    .contact-list { border-top: 1px solid var(--line); }
+    .contact-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 13px 0; border-bottom: 1px solid var(--line); }
+    .contact-actions { display: flex; flex: none; gap: 8px; }
+    .stack-form { display: grid; gap: 12px; }
+    .settings-list { display: grid; gap: 14px; max-width: 640px; }
+    .settings-item { padding: 16px; border: 1px solid var(--line); border-radius: 11px; }
     #notice { width: min(100% - 32px, 1180px); min-height: 0; margin: 0 auto; }
     #notice:not(:empty) { margin-top: 14px; padding: 11px 13px; color: var(--text); background: var(--accent-soft); border-radius: 9px; }
     #notice.error { color: var(--danger); background: var(--danger-soft); }
     :focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 2px; }
     @media (max-width: 800px) {
       .workspace { height: auto; min-height: 0; grid-template-columns: 1fr; }
+      .module-nav { display: flex; position: sticky; top: 0; z-index: 2; gap: 4px; overflow-x: auto; }
+      .module-button { width: auto; flex: 1; justify-content: center; }
+      .chat-module { grid-template-columns: 1fr; }
       .sidebar { max-height: 430px; }
       .chat { min-height: 70vh; }
+      .contacts-layout { grid-template-columns: 1fr; }
       .settings-grid { grid-template-columns: 1fr; }
       .settings-section.wide { grid-column: auto; }
     }
     @media (max-width: 520px) {
       .account #identity { display: none; }
       .workspace, .topbar-inner, #notice { width: min(100% - 20px, 1180px); }
-      .chat-head, .inline-form, #composer { align-items: stretch; flex-direction: column; }
+      .chat-head, .inline-form { align-items: stretch; flex-direction: column; }
+      #composer { align-items: flex-end; flex-direction: row; }
       .message-row { max-width: 92%; }
     }
   </style>
@@ -134,7 +158,13 @@
   </header>
   <div id="notice" role="status" aria-live="polite"></div>
   <div class="workspace">
-    <aside class="card sidebar">
+    <nav class="card module-nav" aria-label="主导航">
+      <button class="module-button active" type="button" data-module="chat-module"><span class="module-icon">💬</span>Chat</button>
+      <button class="module-button" type="button" data-module="contacts-module"><span class="module-icon">👥</span>Contacts</button>
+      <button class="module-button" type="button" data-module="app-settings-module"><span class="module-icon">⚙️</span>Settings</button>
+    </nav>
+    <section id="chat-module" class="module chat-module">
+      <aside class="card sidebar">
       <div class="sidebar-head">
         <h2>会话</h2>
         <p class="muted small">每个会话都可以加入任意成员。</p>
@@ -144,8 +174,8 @@
         </form>
       </div>
       <ul id="conversations" aria-label="会话列表"></ul>
-    </aside>
-    <main class="card chat">
+      </aside>
+      <main class="card chat">
       <header class="chat-head">
         <div>
           <h2 id="conversation-title">请选择会话</h2>
@@ -191,14 +221,26 @@
             <div id="member-list"><p class="muted small">正在加载…</p></div>
           </section>
           <section class="settings-section wide">
-            <h3 id="leave-heading">退出会话</h3>
-            <p id="leave-description" class="muted small">退出后将不能发送或接收新消息。</p>
+            <h3>退出会话</h3>
+            <p class="muted small">任何成员都可以退出；所有者退出时会自动转移所有权。</p>
             <button id="leave" class="danger" type="button">退出会话</button>
             <div id="leave-confirm" class="danger-zone" hidden>
-              <p id="leave-confirm-text">确定退出当前会话吗？此操作不会删除其他成员的消息。</p>
+              <p>确定退出当前会话吗？此操作不会删除其他成员的消息。</p>
               <div style="display:flex;gap:8px;margin-top:10px">
                 <button id="leave-submit" class="danger" type="button">确认退出</button>
                 <button id="leave-cancel" class="secondary" type="button">取消</button>
+              </div>
+            </div>
+            <div id="delete-conversation-zone" style="margin-top:18px" hidden>
+              <h3>删除会话</h3>
+              <p class="muted small">仅所有者可用；会为所有成员永久删除会话和消息。</p>
+              <button id="delete-conversation" class="danger" type="button">删除会话</button>
+              <div id="delete-conversation-confirm" class="danger-zone" hidden>
+                <p>确定为所有成员永久删除当前会话吗？</p>
+                <div style="display:flex;gap:8px;margin-top:10px">
+                  <button id="delete-conversation-submit" class="danger" type="button">确认删除</button>
+                  <button id="delete-conversation-cancel" class="secondary" type="button">取消</button>
+                </div>
               </div>
             </div>
           </section>
@@ -206,14 +248,45 @@
       </section>
       <section id="events" aria-live="polite"><p class="empty">创建或选择一个会话开始聊天</p></section>
       <form id="composer">
-        <input id="message" maxlength="8192" autocomplete="off" placeholder="输入消息" aria-label="消息" disabled>
+        <textarea id="message" rows="1" maxlength="8192" autocomplete="off" placeholder="输入消息" aria-label="消息" disabled></textarea>
         <button type="submit" disabled>发送</button>
       </form>
-    </main>
+      </main>
+    </section>
+    <section id="contacts-module" class="module card page" hidden>
+      <header class="page-head">
+        <div><h2>Contacts</h2><p class="muted small">联系人按邮箱同步到你的所有客户端。</p></div>
+        <button id="new-contact" type="button">新建联系人</button>
+      </header>
+      <div class="contacts-layout">
+        <div>
+          <input id="contact-filter" type="search" placeholder="搜索姓名或邮箱" aria-label="搜索联系人">
+          <div id="contact-list" class="contact-list" style="margin-top:14px"></div>
+        </div>
+        <section class="settings-section">
+          <h3 id="contact-form-title">新建联系人</h3>
+          <form id="contact-form" class="stack-form">
+            <div><label for="contact-name">姓名</label><input id="contact-name" maxlength="80" required></div>
+            <div><label for="contact-email">邮箱</label><input id="contact-email" type="email" required></div>
+            <div><label for="contact-note">备注</label><textarea id="contact-note" rows="4" maxlength="1000"></textarea></div>
+            <div style="display:flex;gap:8px"><button type="submit">保存</button><button id="contact-cancel" class="secondary" type="button">清空</button></div>
+          </form>
+          <p id="contact-status" class="status small" role="status"></p>
+        </section>
+      </div>
+    </section>
+    <section id="app-settings-module" class="module card page" hidden>
+      <header class="page-head"><div><h2>Settings</h2><p class="muted small">账户和连接信息。</p></div></header>
+      <div class="settings-list">
+        <section class="settings-item"><h3>当前账户</h3><p id="settings-identity"></p><p id="settings-email" class="muted small"></p></section>
+        <section class="settings-item"><h3>连接</h3><p>HTTP + WebSocket protocol v1</p><p id="settings-connection" class="muted small">正在连接…</p></section>
+        <section class="settings-item"><h3>会话</h3><button id="settings-logout" class="danger" type="button">退出登录</button></section>
+      </div>
+    </section>
   </div>
 <script>
 (() => {
-  const state = { user: null, conversations: [], selected: null, events: new Map(), socket: null, reconnect: 500, cache: null, readTimers: new Map(), settingsOpen: false, members: [] };
+  const state = { user: null, conversations: [], selected: null, events: new Map(), socket: null, reconnect: 500, cache: null, readTimers: new Map(), settingsOpen: false, members: [], contacts: [], editingContactID: null };
   const $ = id => document.getElementById(id);
 
   async function api(endpoint, options = {}) {
@@ -236,6 +309,97 @@
   function showNotice(message = '', error = false) { setStatus($('notice'), message, error); }
   function titleOf(conversation) { return conversation.title || '未命名会话'; }
   function userLabel(user) { return user.email || user.display_name || user.username || user.user_id || user.id; }
+
+  async function switchModule(moduleID) {
+    for (const module of document.querySelectorAll('.module')) module.hidden = module.id !== moduleID;
+    for (const button of document.querySelectorAll('.module-button')) button.classList.toggle('active', button.dataset.module === moduleID);
+    if (moduleID === 'contacts-module') await loadContacts();
+  }
+
+  function resetContactForm() {
+    state.editingContactID = null;
+    $('contact-form-title').textContent = '新建联系人';
+    $('contact-name').value = '';
+    $('contact-email').value = '';
+    $('contact-note').value = '';
+    setStatus($('contact-status'));
+  }
+
+  async function loadContacts() {
+    const result = await api('/api/contacts');
+    state.contacts = result.contacts;
+    renderContacts();
+  }
+
+  function renderContacts() {
+    const list = $('contact-list');
+    list.replaceChildren();
+    const query = $('contact-filter').value.trim().toLowerCase();
+    const contacts = state.contacts.filter(contact => !query || contact.name.toLowerCase().includes(query) || contact.email.toLowerCase().includes(query));
+    if (!contacts.length) {
+      const empty = document.createElement('p');
+      empty.className = 'muted small';
+      empty.style.padding = '18px 0';
+      empty.textContent = query ? '没有匹配的联系人' : '还没有联系人';
+      list.append(empty);
+      return;
+    }
+    for (const contact of contacts) {
+      const row = document.createElement('div');
+      row.className = 'contact-row';
+      const identityRow = document.createElement('div');
+      identityRow.className = 'identity-row';
+      const avatar = document.createElement('img');
+      avatar.className = 'avatar';
+      avatar.alt = '';
+      avatar.loading = 'lazy';
+      avatar.referrerPolicy = 'no-referrer';
+      avatar.src = contact.avatar_url;
+      const identity = document.createElement('div');
+      const name = document.createElement('div');
+      name.className = 'member-email';
+      name.textContent = contact.name;
+      const detail = document.createElement('div');
+      detail.className = 'member-meta';
+      detail.textContent = contact.note ? `${contact.email} · ${contact.note}` : contact.email;
+      identity.append(name, detail);
+      identityRow.append(avatar, identity);
+      const actions = document.createElement('div');
+      actions.className = 'contact-actions';
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'secondary';
+      edit.textContent = '编辑';
+      edit.onclick = () => {
+        state.editingContactID = contact.id;
+        $('contact-form-title').textContent = '编辑联系人';
+        $('contact-name').value = contact.name;
+        $('contact-email').value = contact.email;
+        $('contact-note').value = contact.note || '';
+        $('contact-name').focus();
+      };
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'danger';
+      remove.textContent = '删除';
+      remove.onclick = async () => {
+        if (remove.dataset.confirm !== 'true') {
+          remove.dataset.confirm = 'true';
+          remove.textContent = '确认删除';
+          return;
+        }
+        remove.disabled = true;
+        try {
+          await api(`/api/contacts/${contact.id}`, {method:'DELETE'});
+          if (state.editingContactID === contact.id) resetContactForm();
+          await loadContacts();
+        } catch (error) { remove.disabled = false; setStatus($('contact-status'), error.message, true); }
+      };
+      actions.append(edit, remove);
+      row.append(identityRow, actions);
+      list.append(row);
+    }
+  }
 
   function openCache() {
     return new Promise((resolve, reject) => {
@@ -283,6 +447,8 @@
     state.cache = await openCache().catch(() => null);
     $('identity-avatar').src = state.user.avatar_url;
     $('identity').textContent = userLabel(state.user);
+    $('settings-identity').textContent = state.user.display_name || state.user.username || 'Chat user';
+    $('settings-email').textContent = state.user.email;
     await refreshConversations();
     connect();
   }
@@ -425,9 +591,14 @@
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const socket = new WebSocket(`${protocol}//${location.host}/ws`);
     state.socket = socket;
-    socket.onopen = () => { state.reconnect = 500; $('connection').textContent = '已连接'; };
+    socket.onopen = () => {
+      state.reconnect = 500;
+      $('connection').textContent = '已连接';
+      $('settings-connection').textContent = '已连接';
+    };
     socket.onclose = () => {
       $('connection').textContent = '连接断开，正在重连';
+      $('settings-connection').textContent = '连接断开，正在重连';
       setTimeout(connect, state.reconnect);
       state.reconnect = Math.min(state.reconnect * 2, 10000);
     };
@@ -546,6 +717,44 @@
     if (!text || state.socket?.readyState !== WebSocket.OPEN) return;
     state.socket.send(JSON.stringify({type:'message.send', request_id:crypto.randomUUID(), conversation_id:state.selected.id, client_message_id:crypto.randomUUID(), content:{text}}));
     $('message').value = '';
+    resizeComposer();
+  };
+
+  function resizeComposer() {
+    const message = $('message');
+    message.style.height = 'auto';
+    message.style.height = `${Math.min(message.scrollHeight, 140)}px`;
+  }
+
+  $('message').addEventListener('input', resizeComposer);
+  $('message').addEventListener('keydown', event => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      $('composer').requestSubmit();
+    }
+  });
+
+  for (const button of document.querySelectorAll('.module-button')) {
+    button.onclick = () => switchModule(button.dataset.module).catch(error => showNotice(error.message, true));
+  }
+
+  $('new-contact').onclick = () => { resetContactForm(); $('contact-name').focus(); };
+  $('contact-cancel').onclick = resetContactForm;
+  $('contact-filter').oninput = renderContacts;
+  $('contact-form').onsubmit = async event => {
+    event.preventDefault();
+    const submit = $('contact-form').querySelector('button[type="submit"]');
+    submit.disabled = true;
+    setStatus($('contact-status'), '正在保存…');
+    const body = JSON.stringify({name:$('contact-name').value.trim(), email:$('contact-email').value.trim(), note:$('contact-note').value.trim()});
+    try {
+      const endpoint = state.editingContactID ? `/api/contacts/${state.editingContactID}` : '/api/contacts';
+      await api(endpoint, {method:state.editingContactID ? 'PUT' : 'POST', body});
+      resetContactForm();
+      await loadContacts();
+      setStatus($('contact-status'), '联系人已保存。');
+    } catch (error) { setStatus($('contact-status'), error.message, true); }
+    finally { submit.disabled = false; }
   };
 
   $('settings').onclick = async () => {
@@ -554,6 +763,7 @@
     $('settings').setAttribute('aria-expanded', String(state.settingsOpen));
     $('settings').textContent = state.settingsOpen ? '收起设置' : '会话设置';
     $('leave-confirm').hidden = true;
+    $('delete-conversation-confirm').hidden = true;
     if (state.settingsOpen) {
       $('rename-title').value = state.selected.title || '';
       const canManage = state.selected.status === 'active' && ['owner', 'admin'].includes(state.selected.role);
@@ -562,12 +772,7 @@
       $('member-email').disabled = !canManage;
       $('invite').disabled = !canManage;
       $('leave').disabled = state.selected.status !== 'active';
-      const deleting = state.selected.role === 'owner';
-      $('leave-heading').textContent = deleting ? '删除会话' : '退出会话';
-      $('leave-description').textContent = deleting ? '删除后所有成员都将失去该会话和消息。' : '退出后将不能发送或接收新消息。';
-      $('leave').textContent = deleting ? '删除会话' : '退出会话';
-      $('leave-confirm-text').textContent = deleting ? '确定为所有成员永久删除当前会话吗？' : '确定退出当前会话吗？此操作不会删除其他成员的消息。';
-      $('leave-submit').textContent = deleting ? '确认删除' : '确认退出';
+      $('delete-conversation-zone').hidden = state.selected.role !== 'owner';
       await loadMembers().catch(error => showNotice(error.message, true));
     }
   };
@@ -653,23 +858,29 @@
 
   $('leave').onclick = () => { $('leave-confirm').hidden = false; };
   $('leave-cancel').onclick = () => { $('leave-confirm').hidden = true; };
+  $('delete-conversation').onclick = () => { $('delete-conversation-confirm').hidden = false; };
+  $('delete-conversation-cancel').onclick = () => { $('delete-conversation-confirm').hidden = true; };
+
+  async function clearSelectedConversation(message) {
+    state.selected = null;
+    state.settingsOpen = false;
+    await refreshConversations();
+    $('settings-panel').hidden = true;
+    $('settings').disabled = true;
+    $('conversation-title').textContent = '请选择会话';
+    $('events').replaceChildren();
+    const empty = document.createElement('p');
+    empty.className = 'empty';
+    empty.textContent = '创建或选择一个会话开始聊天';
+    $('events').append(empty);
+    showNotice(message);
+  }
+
   $('leave-submit').onclick = async () => {
     $('leave-submit').disabled = true;
     try {
-      const deleting = state.selected.role === 'owner';
-      await api(deleting ? `/api/conversations/${state.selected.id}` : `/api/conversations/${state.selected.id}/leave`, {method:deleting ? 'DELETE' : 'POST'});
-      state.selected = null;
-      state.settingsOpen = false;
-      await refreshConversations();
-      $('settings-panel').hidden = true;
-      $('settings').disabled = true;
-      $('conversation-title').textContent = '请选择会话';
-      $('events').replaceChildren();
-      const empty = document.createElement('p');
-      empty.className = 'empty';
-      empty.textContent = '创建或选择一个会话开始聊天';
-      $('events').append(empty);
-      showNotice(deleting ? '会话已删除。' : '已退出会话。');
+      await api(`/api/conversations/${state.selected.id}/leave`, {method:'POST'});
+      await clearSelectedConversation('已退出会话。');
     } catch (error) {
       showNotice(error.message, true);
     } finally {
@@ -677,12 +888,23 @@
     }
   };
 
-  $('logout').onclick = async () => {
+  $('delete-conversation-submit').onclick = async () => {
+    $('delete-conversation-submit').disabled = true;
+    try {
+      await api(`/api/conversations/${state.selected.id}`, {method:'DELETE'});
+      await clearSelectedConversation('会话已删除。');
+    } catch (error) { showNotice(error.message, true); }
+    finally { $('delete-conversation-submit').disabled = false; }
+  };
+
+  async function logout() {
     await api('/auth/logout', {method:'POST', body:'{}'});
     if (state.cache) state.cache.close();
     indexedDB.deleteDatabase(`chat-${state.user.id}`);
     location.href = '/';
-  };
+  }
+  $('logout').onclick = logout;
+  $('settings-logout').onclick = logout;
 
   bootstrap().catch(error => showNotice(error.message, true));
 })();
