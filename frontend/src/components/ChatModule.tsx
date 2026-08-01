@@ -326,7 +326,7 @@ export default function ChatModule({
           ))}
         </ul>
       </aside>
-      <main className="card chat">
+      <main className={`card chat${chat.settingsOpen && selected ? ' settings-open' : ''}`}>
         <header className="chat-head">
           <button className="mobile-back secondary" type="button" aria-label="返回会话列表" onClick={onBackToList}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
