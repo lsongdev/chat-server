@@ -1,56 +1,46 @@
 package main
 
 import (
-	"html/template"
+	"embed"
+	"fmt"
+	"io/fs"
 	"net/http"
-	"net/url"
 	"strings"
-
-	"github.com/lsongdev/chat-server/templates"
 )
 
-type Web struct {
-	login  *template.Template
-	app    *template.Template
-	invite *template.Template
+//go:embed all:frontend/dist
+var distFS embed.FS
+
+// NewStaticHandler serves the built React application. Unmatched paths fall
+// back to index.html so that client-side routes (like /invite/{token}) work.
+func NewStaticHandler() (http.Handler, error) {
+	sub, err := fs.Sub(distFS, "frontend/dist")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := fs.Stat(sub, "index.html"); err != nil {
+		return nil, fmt.Errorf("frontend build is missing; run npm run build in frontend: %w", err)
+	}
+	return newStaticHandler(sub), nil
 }
 
-func NewWeb() (*Web, error) {
-	login, err := template.ParseFS(templates.Files, "login.html")
-	if err != nil {
-		return nil, err
-	}
-	app, err := template.ParseFS(templates.Files, "app.html")
-	if err != nil {
-		return nil, err
-	}
-	invite, err := template.ParseFS(templates.Files, "invite.html")
-	if err != nil {
-		return nil, err
-	}
-	return &Web{login: login, app: app, invite: invite}, nil
-}
-
-func (web *Web) Home(w http.ResponseWriter, r *http.Request) {
-	if _, ok := currentUser(r.Context()); !ok {
+func newStaticHandler(sub fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(sub))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		if path != "" {
+			if _, err := fs.Stat(sub, path); err == nil {
+				fileServer.ServeHTTP(w, r)
+				return
+			}
+		}
+		index, err := fs.ReadFile(sub, "index.html")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_ = web.login.Execute(w, map[string]string{"ReturnTo": safeReturnTo(r.URL.Query().Get("return_to"))})
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = web.app.Execute(w, nil)
-}
-
-func (web *Web) Invite(w http.ResponseWriter, r *http.Request) {
-	token := strings.TrimPrefix(r.URL.Path, "/invite/")
-	if token == "" || strings.Contains(token, "/") {
-		http.NotFound(w, r)
-		return
-	}
-	if _, ok := currentUser(r.Context()); !ok {
-		http.Redirect(w, r, "/?return_to="+url.QueryEscape(r.URL.Path), http.StatusFound)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = web.invite.Execute(w, map[string]string{"Token": token})
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(index)
+	})
 }

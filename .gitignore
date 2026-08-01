@@ -1,3 +1,4 @@
 .env
 chat.db
 *.test
+/chat-server

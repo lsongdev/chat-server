@@ -1,57 +1,69 @@
 package main
 
 import (
-	"context"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
-func TestHomeRendersEmailLoginForAnonymousVisitor(t *testing.T) {
-	web, err := NewWeb()
-	if err != nil {
-		t.Fatal(err)
+func testFrontend() fs.FS {
+	return fstest.MapFS{
+		"index.html":    {Data: []byte(`<!doctype html><div id="root"></div>`)},
+		"assets/app.js": {Data: []byte(`console.log("chat")`)},
 	}
+}
+
+func TestStaticHandlerServesSPA(t *testing.T) {
+	handler := newStaticHandler(testFrontend())
+
 	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/?return_to=%2Finvite%2Fexample", nil)
-	web.Home(response, request)
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("home returned %d", response.Code)
 	}
-	body := response.Body.String()
-	for _, expected := range []string{"id=\"login-form\"", "id=\"name\"", "id=\"email\"", "使用 MyCenter 获取邮箱", "/invite/example"} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("login page is missing %q", expected)
-		}
+	if !strings.Contains(response.Body.String(), `<div id="root">`) {
+		t.Fatal("index.html did not render the React root")
 	}
 }
 
-func TestHomeRendersChatForSignedInVisitor(t *testing.T) {
-	web, err := NewWeb()
-	if err != nil {
-		t.Fatal(err)
-	}
-	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/", nil)
-	request = request.WithContext(context.WithValue(request.Context(), userContextKey, User{}))
-	web.Home(response, request)
+func TestStaticHandlerFallsBackForClientRoutes(t *testing.T) {
+	handler := newStaticHandler(testFrontend())
 
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "class=\"app-shell\"") {
-		t.Fatalf("signed-in home did not render the chat application")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/invite/some-token", nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("invite route returned %d", response.Code)
+	}
+	if !strings.Contains(response.Body.String(), `<div id="root">`) {
+		t.Fatal("client route did not fall back to index.html")
 	}
 }
 
-func TestInviteRedirectsAnonymousVisitorToEmailLogin(t *testing.T) {
-	web, err := NewWeb()
-	if err != nil {
-		t.Fatal(err)
-	}
-	response := httptest.NewRecorder()
-	web.Invite(response, httptest.NewRequest(http.MethodGet, "/invite/example", nil))
+func TestStaticHandlerDeepFallbackForClientRoutes(t *testing.T) {
+	handler := newStaticHandler(testFrontend())
 
-	if response.Code != http.StatusFound || response.Header().Get("Location") != "/?return_to=%2Finvite%2Fexample" {
-		t.Fatalf("unexpected invite redirect: %d %q", response.Code, response.Header().Get("Location"))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/invite/a/very/deep/route", nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("deep invite route returned %d", response.Code)
+	}
+	if !strings.Contains(response.Body.String(), `<div id="root">`) {
+		t.Fatal("deep client route did not fall back to index.html")
+	}
+}
+
+func TestStaticHandlerServesExistingAsset(t *testing.T) {
+	handler := newStaticHandler(testFrontend())
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/assets/app.js", nil))
+
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "chat") {
+		t.Fatalf("asset was not served: %d %q", response.Code, response.Body.String())
 	}
 }

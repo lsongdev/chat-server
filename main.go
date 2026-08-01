@@ -40,7 +40,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	web, err := NewWeb()
+	web, err := NewStaticHandler()
 	if err != nil {
 		return err
 	}
@@ -50,8 +50,6 @@ func run() error {
 	ws := NewWebSocketHandler(store, hub, cfg)
 
 	router := mux.NewRouter()
-	router.Handle("/", auth.Optional(http.HandlerFunc(web.Home))).Methods(http.MethodGet)
-	router.Handle("/invite/{token}", auth.Optional(http.HandlerFunc(web.Invite))).Methods(http.MethodGet)
 	router.Handle("/auth/login", limiter.LoginMiddleware(cfg, http.HandlerFunc(auth.Login))).Methods(http.MethodGet)
 	router.Handle("/auth/email", limiter.LoginMiddleware(cfg, auth.RequireSameOrigin(http.HandlerFunc(auth.EmailLogin)))).Methods(http.MethodPost)
 	router.HandleFunc("/auth/callback", auth.Callback).Methods(http.MethodGet)
@@ -90,6 +88,7 @@ func run() error {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}).Methods(http.MethodGet)
+	router.PathPrefix("/").Handler(web)
 
 	server := &http.Server{
 		Addr: cfg.HTTPAddr, Handler: securityHeaders(cfg, recoverer(requestLogger(router))),

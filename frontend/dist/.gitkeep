@@ -1,0 +1,1 @@
+# Vite copies this sentinel into dist so Go's embed pattern also works before a frontend build.

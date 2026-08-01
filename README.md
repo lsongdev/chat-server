@@ -1,14 +1,26 @@
 # Flame Chat
 
-一个单机优先的轻量聊天服务：Go、PostgreSQL 和 WebSocket。所有客户端只需姓名和邮箱即可建立本站会话；Web 也可以选择通过 OIDC 获取邮箱。两种方式都会按规范化邮箱归并到同一个聊天用户。
+一个单机优先的轻量聊天服务：Go 后端 + React 前端、PostgreSQL 和 WebSocket。所有客户端只需姓名和邮箱即可建立本站会话；Web 也可以选择通过 OIDC 获取邮箱。两种方式都会按规范化邮箱归并到同一个聊天用户。
 
 产品中只有“会话”这一种交流容器。会话管理员使用完整邮件地址精确查找并添加已经登录过 Chat 的用户。
 
-核心接口包括会话创建/删除/退出、会话重命名、成员增删与管理员角色、个人通讯录 CRUD、事件同步和消息发送。`DELETE /api/conversations/{id}` 仅允许所有者删除整个会话；普通成员使用 `POST /api/conversations/{id}/leave` 退出。
+## 项目结构（前后端分离）
+
+```
+chat-server/
+├── main.go handlers.go auth.go hub.go store.go   # Go 后端：REST /api + WebSocket /ws + 鉴权
+├── web.go                                         # 托管构建后的 React 静态文件（SPA fallback）
+└── frontend/                                      # React + Vite 前端
+    ├── src/App.tsx                                # 路由与登录门控
+    ├── src/useChatClient.ts                       # 会话/消息状态机 + WebSocket 同步
+    └── src/pages/ components/                     # 登录 / 聊天 / 邀请 / 联系人 / 设置
+```
+
+前端只通过 `fetch /api/*` 和 `WebSocket /ws` 与后端通信，Cookie 由后端 HttpOnly 设置，生产环境同源部署、由 Go 直接托管。
 
 ## 登录方式
 
-- iOS 和 Web：`POST /auth/email`，JSON 只包含 `name` 和 `email`，成功后使用服务端设置的 HttpOnly Cookie。Web 根页面在未登录时显示该表单。
+- iOS 和 Web：`POST /auth/email`，JSON 只包含 `name` 和 `email`，成功后使用服务端设置的 HttpOnly Cookie。
 - 可选 MyCenter 登录：访问 `GET /auth/login`，完成 OIDC Authorization Code + PKCE 后由服务端读取姓名和邮箱，并设置同一种 Cookie。
 
 简易邮箱登录不验证邮箱所有权，适合受信部署或早期产品。公开部署如需防止冒用，应在这个接口前增加邮件验证码或组织网关。
@@ -34,17 +46,45 @@ cp .env.example .env
 
 同时把 `POSTGRES_PASSWORD` 换成长随机的 URL-safe 密码（推荐只使用字母、数字、`-` 和 `_`）。本地运行时如果使用其他字符，写入 `DATABASE_URL` 前必须进行 URL 编码。
 
+## 前端
+
+```sh
+cd frontend
+npm install
+npm run dev      # 开发服务器，Vite 将 /api、/auth、/ws 代理到 Go 后端
+npm run build    # 产物输出到 frontend/dist，由 Go 服务托管
+npm run lint
+```
+
+开发时前端跑在 `http://localhost:5173`，需要把 `ALLOWED_ORIGINS` 中加入该地址（`.env.example` 已默认包含）。
+
 ## Docker Compose 启动
 
 ```sh
 docker compose up --build
 ```
 
-打开 <http://localhost:8080>。应用启动时会在 PostgreSQL 中执行尚未应用的版本化 migration。
+打开 <http://localhost:8080>。镜像内先构建前端再构建 Go 二进制，应用启动时会在 PostgreSQL 中执行尚未应用的版本化 migration。
 
-## 本地 Go 启动
+## 本地启动
 
-先启动 PostgreSQL，把 `.env` 中的 `DATABASE_URL` 保持为 `127.0.0.1` 地址，然后导出变量：
+### 方式一：Go 托管（生产形态）
+
+先构建前端，再直接跑 Go：
+
+```sh
+cd frontend && npm ci && npm run build && cd ..
+set -a
+source .env
+set +a
+go run .
+```
+
+打开 <http://localhost:8080>。
+
+### 方式二：前后端分离开发
+
+后端：
 
 ```sh
 set -a
@@ -53,15 +93,21 @@ set +a
 go run .
 ```
 
-要求 Go 1.25 或更高版本。
+前端（Vite dev server + 代理）：
+
+```sh
+cd frontend
+npm run dev
+```
+
+打开 <http://localhost:5173>。要求 Go 1.25+ 与 Node 20+。
 
 ## 验证
-
-不依赖外部服务的测试：
 
 ```sh
 go test ./...
 go vet ./...
+cd frontend && npm run build && npm run lint
 ```
 
 存储集成测试需要一个专用测试数据库：
