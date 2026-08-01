@@ -1,0 +1,367 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/gorilla/mux"
+)
+
+type API struct {
+	store  *Store
+	hub    *Hub
+	config Config
+}
+
+func NewAPI(store *Store, hub *Hub, cfg Config) *API {
+	return &API{store: store, hub: hub, config: cfg}
+}
+
+func (a *API) Me(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	writeJSON(w, http.StatusOK, user)
+}
+
+func (a *API) ListConversations(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	conversations, err := a.store.ListConversations(r.Context(), user.ID)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	if conversations == nil {
+		conversations = []Conversation{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"conversations": conversations})
+}
+
+func (a *API) CreateConversation(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	var input struct {
+		Kind  string `json:"kind"`
+		Title string `json:"title"`
+	}
+	if err := decodeJSON(w, r, &input, 16<<10); err != nil {
+		return
+	}
+	input.Kind = strings.TrimSpace(input.Kind)
+	input.Title = strings.TrimSpace(input.Title)
+	if input.Kind == "" {
+		input.Kind = "group"
+	}
+	if (input.Kind != "group" && input.Kind != "direct") || len([]rune(input.Title)) > 100 {
+		writeProblem(w, http.StatusBadRequest, "invalid_conversation", "kind or title is invalid")
+		return
+	}
+	conversation, event, err := a.store.CreateConversation(r.Context(), user.ID, input.Kind, input.Title)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	a.hub.AddUserConversation(user.ID, conversation.ID)
+	a.hub.Broadcast(conversation.ID, map[string]any{"type": "conversation.event", "event": event})
+	writeJSON(w, http.StatusCreated, conversation)
+}
+
+func (a *API) ListMembers(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	conversationID, err := uuid.Parse(mux.Vars(r)["id"])
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_conversation_id", "conversation id is invalid")
+		return
+	}
+	members, err := a.store.ListMembers(r.Context(), user.ID, conversationID)
+	if err != nil {
+		handleStoreError(w, r, err)
+		return
+	}
+	if members == nil {
+		members = []Member{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"members": members})
+}
+
+func (a *API) RenameConversation(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	conversationID, err := uuid.Parse(mux.Vars(r)["id"])
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_conversation_id", "conversation id is invalid")
+		return
+	}
+	var input struct {
+		Title string `json:"title"`
+	}
+	if err := decodeJSON(w, r, &input, 16<<10); err != nil {
+		return
+	}
+	input.Title = strings.TrimSpace(input.Title)
+	if len([]rune(input.Title)) > 100 {
+		writeProblem(w, http.StatusBadRequest, "invalid_title", "title is too long")
+		return
+	}
+	event, err := a.store.RenameConversation(r.Context(), user.ID, conversationID, input.Title)
+	if err != nil {
+		handleStoreError(w, r, err)
+		return
+	}
+	a.hub.Broadcast(conversationID, map[string]any{"type": "conversation.event", "event": event})
+	writeJSON(w, http.StatusOK, event)
+}
+
+func (a *API) LeaveConversation(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	conversationID, err := uuid.Parse(mux.Vars(r)["id"])
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_conversation_id", "conversation id is invalid")
+		return
+	}
+	event, _, err := a.store.LeaveConversation(r.Context(), user.ID, conversationID)
+	if err != nil {
+		handleStoreError(w, r, err)
+		return
+	}
+	a.hub.Broadcast(conversationID, map[string]any{"type": "conversation.event", "event": event})
+	a.hub.RemoveUserConversation(user.ID, conversationID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) RemoveMember(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	conversationID, err := uuid.Parse(mux.Vars(r)["id"])
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_conversation_id", "conversation id is invalid")
+		return
+	}
+	targetID, err := uuid.Parse(mux.Vars(r)["userID"])
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_user_id", "user id is invalid")
+		return
+	}
+	event, err := a.store.RemoveMember(r.Context(), user.ID, conversationID, targetID)
+	if err != nil {
+		handleStoreError(w, r, err)
+		return
+	}
+	a.hub.Broadcast(conversationID, map[string]any{"type": "conversation.event", "event": event})
+	a.hub.RemoveUserConversation(targetID, conversationID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) ListEvents(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	conversationID, err := uuid.Parse(mux.Vars(r)["id"])
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_conversation_id", "conversation id is invalid")
+		return
+	}
+	afterSeq, err := strconv.ParseInt(defaultString(r.URL.Query().Get("after_seq"), "0"), 10, 64)
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_sequence", "after_seq is invalid")
+		return
+	}
+	limit, _ := strconv.Atoi(defaultString(r.URL.Query().Get("limit"), "100"))
+	events, err := a.store.ListEvents(r.Context(), user.ID, conversationID, afterSeq, limit)
+	if err != nil {
+		handleStoreError(w, r, err)
+		return
+	}
+	if events == nil {
+		events = []Event{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+}
+
+func (a *API) SendMessage(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	conversationID, err := uuid.Parse(mux.Vars(r)["id"])
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_conversation_id", "conversation id is invalid")
+		return
+	}
+	var input struct {
+		ClientMessageID uuid.UUID `json:"client_message_id"`
+		Text            string    `json:"text"`
+	}
+	if err := decodeJSON(w, r, &input, int64(a.config.MaxMessageBytes+4096)); err != nil {
+		return
+	}
+	if input.ClientMessageID == uuid.Nil || len(input.Text) == 0 || len([]byte(input.Text)) > a.config.MaxMessageBytes {
+		writeProblem(w, http.StatusBadRequest, "invalid_message", "message is empty or too large")
+		return
+	}
+	event, err := a.store.AppendMessage(r.Context(), user.ID, conversationID, input.ClientMessageID, input.Text)
+	if err != nil {
+		handleStoreError(w, r, err)
+		return
+	}
+	a.hub.Broadcast(conversationID, map[string]any{"type": "conversation.event", "event": event})
+	writeJSON(w, http.StatusCreated, event)
+}
+
+func (a *API) UpdateRead(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	conversationID, err := uuid.Parse(mux.Vars(r)["id"])
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_conversation_id", "conversation id is invalid")
+		return
+	}
+	var input struct {
+		Seq int64 `json:"seq"`
+	}
+	if err := decodeJSON(w, r, &input, 4<<10); err != nil {
+		return
+	}
+	if err := a.store.UpdateRead(r.Context(), user.ID, conversationID, input.Seq); err != nil {
+		handleStoreError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) CreateInvite(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	conversationID, err := uuid.Parse(mux.Vars(r)["id"])
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_conversation_id", "conversation id is invalid")
+		return
+	}
+	token, err := randomToken(32)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	expiresAt := time.Now().Add(24 * time.Hour)
+	if err := a.store.CreateInvite(r.Context(), user.ID, conversationID, token, expiresAt); err != nil {
+		handleStoreError(w, r, err)
+		return
+	}
+	inviteURL := a.config.BaseURL.ResolveReference(&url.URL{Path: "/invite/" + token}).String()
+	writeJSON(w, http.StatusCreated, map[string]any{"url": inviteURL, "expires_at": expiresAt})
+}
+
+func (a *API) AcceptInvite(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	token := mux.Vars(r)["token"]
+	if len(token) < 32 || len(token) > 128 {
+		writeProblem(w, http.StatusBadRequest, "invalid_invite", "invite token is invalid")
+		return
+	}
+	conversationID, event, err := a.store.AcceptInvite(r.Context(), user.ID, token, a.config.MaxConversationMembers)
+	if err != nil {
+		handleStoreError(w, r, err)
+		return
+	}
+	a.hub.AddUserConversation(user.ID, conversationID)
+	if event.Type == "conversation.redirected" {
+		a.hub.Broadcast(event.ConversationID, map[string]any{"type": "conversation.redirected", "from_conversation_id": event.ConversationID, "conversation_id": conversationID})
+		a.hub.RemoveConversation(event.ConversationID)
+	} else if event.ID != uuid.Nil {
+		a.hub.Broadcast(conversationID, map[string]any{"type": "conversation.event", "event": event})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"conversation_id": conversationID})
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}
+
+func writeProblem(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, target any, maxBytes int64) error {
+	if !strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
+		writeProblem(w, http.StatusUnsupportedMediaType, "invalid_content_type", "Content-Type must be application/json")
+		return errors.New("invalid content type")
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_json", "request body is invalid")
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeProblem(w, http.StatusBadRequest, "invalid_json", "request body must contain one JSON value")
+		return errors.New("multiple JSON values")
+	}
+	return nil
+}
+
+func handleStoreError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, ErrForbidden):
+		writeProblem(w, http.StatusForbidden, "forbidden", "you cannot perform this action")
+	case errors.Is(err, ErrNotFound):
+		writeProblem(w, http.StatusNotFound, "not_found", "resource not found")
+	case errors.Is(err, ErrInviteExpired):
+		writeProblem(w, http.StatusGone, "invite_unavailable", "invite is expired or already used")
+	case errors.Is(err, ErrDirectFull):
+		writeProblem(w, http.StatusConflict, "direct_conversation_full", "direct conversation already has two members")
+	case errors.Is(err, ErrInvalidSequence):
+		writeProblem(w, http.StatusBadRequest, "invalid_sequence", "sequence is invalid")
+	case errors.Is(err, ErrConflict):
+		writeProblem(w, http.StatusConflict, "conflict", "operation conflicts with the current state")
+	default:
+		serverError(w, r, err)
+	}
+}
+
+func serverError(w http.ResponseWriter, r *http.Request, err error) {
+	slog.Error("request failed", "method", r.Method, "path", r.URL.Path, "error", err)
+	writeProblem(w, http.StatusInternalServerError, "internal_error", "request could not be completed")
+}
+
+func defaultString(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func requestLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		next.ServeHTTP(w, r)
+		slog.Info("request", "method", r.Method, "path", r.URL.Path, "duration", time.Since(started).String())
+	})
+}
+
+func securityHeaders(cfg Config, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Request-ID", uuid.NewString())
+		if cfg.CookieSecure {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func recoverer(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				slog.Error("panic in request", "method", r.Method, "path", r.URL.Path, "panic", fmt.Sprint(recovered))
+				writeProblem(w, http.StatusInternalServerError, "internal_error", "request could not be completed")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}

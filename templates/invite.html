@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>加入会话 · Flame Chat</title>
+  <style>
+    :root { color-scheme: light dark; font: 16px/1.5 system-ui,sans-serif; }
+    body { margin: 0; min-height: 100vh; display:grid; place-items:center; background:#111827; color:#e5e7eb; }
+    main { width:min(420px,calc(100% - 32px)); padding:28px; border:1px solid #374151; border-radius:14px; background:#1f2937; }
+    button,a { font:inherit; padding:10px 14px; border-radius:8px; }
+    button { border:0; background:#2563eb; color:white; cursor:pointer; }
+    a { color:#93c5fd; }
+    #status { color:#fbbf24; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>加入会话</h1>
+  <p>确认后，你将成为这个会话的成员。</p>
+  <button id="accept">确认加入</button>
+  <a href="/">返回聊天</a>
+  <p id="status"></p>
+</main>
+<script>
+document.getElementById('accept').onclick = async () => {
+  const status = document.getElementById('status'); status.textContent = '正在加入…';
+  const response = await fetch('/api/invites/{{.Token}}/accept', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  if (response.ok) { location.href='/'; return; }
+  const problem = await response.json().catch(() => ({}));
+  status.textContent = problem.error?.message || '无法加入此会话';
+};
+</script>
+</body>
+</html>

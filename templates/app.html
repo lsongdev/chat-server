@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Flame Chat</title>
+  <style>
+    :root { color-scheme: light dark; font: 15px/1.45 system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #111827; color: #e5e7eb; }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    .shell { display: grid; grid-template-columns: 300px 1fr; min-height: 100vh; }
+    aside { border-right: 1px solid #374151; padding: 16px; }
+    main { display: grid; grid-template-rows: auto 1fr auto; min-width: 0; }
+    header { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid #374151; }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 18px; }
+    h2 { font-size: 16px; }
+    .muted { color: #9ca3af; font-size: 13px; }
+    .stack { display: grid; gap: 10px; }
+    .row { display: flex; gap: 8px; }
+    input, select, button { border: 1px solid #4b5563; border-radius: 8px; padding: 9px 10px; background: #1f2937; color: inherit; }
+    input { min-width: 0; flex: 1; }
+    button.primary { background: #2563eb; border-color: #2563eb; }
+    button.ghost { background: transparent; }
+    #conversations { list-style: none; padding: 0; margin: 18px 0; display: grid; gap: 5px; }
+    #conversations button { width: 100%; text-align: left; border-color: transparent; }
+    #conversations button.active { border-color: #60a5fa; background: #1e3a5f; }
+    #events { overflow: auto; padding: 22px; display: flex; flex-direction: column; gap: 12px; }
+    .event { max-width: 720px; padding: 10px 12px; background: #1f2937; border-radius: 10px; }
+    .event.mine { align-self: flex-end; background: #1e3a5f; }
+    .system { align-self: center; color: #9ca3af; font-size: 13px; }
+    #composer { display: flex; gap: 8px; padding: 16px 20px; border-top: 1px solid #374151; }
+    #empty { margin: auto; color: #9ca3af; }
+    #notice { min-height: 20px; color: #fbbf24; overflow-wrap: anywhere; }
+    dialog { border: 1px solid #4b5563; border-radius: 12px; background: #111827; color: inherit; padding: 20px; }
+    @media (max-width: 720px) { .shell { grid-template-columns: 1fr; } aside { border-right: 0; border-bottom: 1px solid #374151; } main { min-height: 70vh; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <div><h1>Flame Chat</h1><p id="identity" class="muted">正在登录…</p></div>
+        <button id="logout" class="ghost">退出</button>
+      </div>
+      <form id="create" class="stack" style="margin-top:22px">
+        <select id="kind"><option value="group">群聊</option><option value="direct">私聊邀请</option></select>
+        <input id="title" maxlength="100" placeholder="会话名称（可选）">
+        <button class="primary">创建会话</button>
+      </form>
+      <ul id="conversations"></ul>
+      <p id="notice" class="muted"></p>
+    </aside>
+    <main>
+      <header>
+        <div><h2 id="conversation-title">请选择会话</h2><p id="connection" class="muted">正在连接…</p></div>
+        <div class="row"><button id="rename" class="ghost" disabled>改名</button><button id="members" class="ghost" disabled>成员</button><button id="invite" class="ghost" disabled>邀请</button><button id="leave" class="ghost" disabled>退出会话</button></div>
+      </header>
+      <section id="events"><p id="empty">创建或选择一个会话开始聊天</p></section>
+      <form id="composer">
+        <input id="message" maxlength="8192" autocomplete="off" placeholder="输入消息" disabled>
+        <button class="primary" disabled>发送</button>
+      </form>
+    </main>
+  </div>
+  <dialog id="invite-dialog">
+    <form method="dialog" class="stack">
+      <h2>邀请链接</h2>
+      <p class="muted">链接 24 小时内有效且只能使用一次。</p>
+      <input id="invite-url" readonly>
+      <div class="row"><button id="copy" type="button" class="primary">复制</button><button>关闭</button></div>
+    </form>
+  </dialog>
+  <dialog id="members-dialog">
+    <form method="dialog" class="stack">
+      <h2>会话成员</h2>
+      <div id="member-list" class="stack"></div>
+      <button>关闭</button>
+    </form>
+  </dialog>
+<script>
+(() => {
+  const state = { user: null, conversations: [], selected: null, events: new Map(), socket: null, reconnect: 500, cache: null, readTimers: new Map() };
+  const $ = id => document.getElementById(id);
+
+  async function api(path, options = {}) {
+    const headers = new Headers(options.headers || {});
+    if (options.body) headers.set('Content-Type', 'application/json');
+    const response = await fetch(path, {...options, headers});
+    if (response.status === 401) { location.href = '/auth/login'; throw new Error('需要登录'); }
+    if (!response.ok) {
+      const problem = await response.json().catch(() => ({}));
+      throw new Error(problem.error?.message || `请求失败 (${response.status})`);
+    }
+    return response.status === 204 ? null : response.json();
+  }
+
+  function openCache() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(`flame-chat-${state.user.id}`, 1);
+      request.onupgradeneeded = () => {
+        const store = request.result.createObjectStore('events', {keyPath:'key'});
+        store.createIndex('conversation', 'cache_conversation');
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  function cacheEvents(events) {
+    if (!state.cache || !events.length) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const transaction=state.cache.transaction('events','readwrite'); const store=transaction.objectStore('events');
+      for (const event of events) store.put({...event,key:`${event.conversation_id}|${event.seq}`,cache_conversation:event.conversation_id});
+      transaction.oncomplete=resolve; transaction.onerror=()=>reject(transaction.error);
+    });
+  }
+
+  function loadCachedEvents(conversationID) {
+    if (!state.cache) return Promise.resolve([]);
+    return new Promise((resolve, reject) => {
+      const request=state.cache.transaction('events').objectStore('events').index('conversation').getAll(conversationID);
+      request.onsuccess=()=>resolve(request.result); request.onerror=()=>reject(request.error);
+    });
+  }
+
+  function contiguousSeq(conversation, bucket) {
+    let cursor=conversation.joined_seq-1;
+    for (const seq of [...bucket.keys()].sort((a,b)=>a-b)) {
+      if (seq === cursor+1) cursor=seq;
+      else if (seq > cursor+1) break;
+    }
+    return cursor;
+  }
+
+  function showNotice(message = '') { $('notice').textContent = message; }
+  function titleOf(c) { return c.title || (c.kind === 'direct' ? '私聊' : '未命名群聊'); }
+
+  async function bootstrap() {
+    state.user = await api('/api/me');
+    state.cache = await openCache().catch(() => null);
+    $('identity').textContent = state.user.display_name || state.user.username || state.user.email || state.user.id;
+    await refreshConversations();
+    connect();
+  }
+
+  async function refreshConversations() {
+    const result = await api('/api/conversations');
+    state.conversations = result.conversations;
+    renderConversations();
+    if (state.selected) {
+      const current = state.conversations.find(c => c.id === state.selected.id);
+      if (current) state.selected = current;
+    }
+  }
+
+  function renderConversations() {
+    const list = $('conversations'); list.replaceChildren();
+    for (const conversation of state.conversations) {
+      const li = document.createElement('li');
+      const button = document.createElement('button');
+      button.textContent = `${titleOf(conversation)}${conversation.last_seq > conversation.last_read_seq ? ' •' : ''}`;
+      button.className = state.selected?.id === conversation.id ? 'active' : '';
+      button.onclick = () => selectConversation(conversation);
+      li.append(button); list.append(li);
+    }
+  }
+
+  async function selectConversation(conversation) {
+    state.selected = conversation; renderConversations();
+    $('conversation-title').textContent = titleOf(conversation);
+    $('message').disabled = conversation.status !== 'active';
+    $('composer').querySelector('button').disabled = conversation.status !== 'active';
+    $('invite').disabled = conversation.status !== 'active' || !['owner','admin'].includes(conversation.role);
+    $('members').disabled = false; $('leave').disabled = conversation.status !== 'active';
+    $('rename').disabled = conversation.status !== 'active' || !['owner','admin'].includes(conversation.role);
+    $('events').replaceChildren();
+    if (!state.events.has(conversation.id)) {
+      const cached=await loadCachedEvents(conversation.id); const bucket=new Map();
+      for (const event of cached) bucket.set(event.seq,event);
+      state.events.set(conversation.id,bucket); renderEvents();
+    }
+    await syncEvents(conversation.id, contiguousSeq(conversation,state.events.get(conversation.id)));
+  }
+
+  async function syncEvents(conversationID, afterSeq) {
+    let cursor = afterSeq;
+    for (;;) {
+      const result = await api(`/api/conversations/${conversationID}/events?after_seq=${cursor}&limit=200`);
+      if (!state.events.has(conversationID)) state.events.set(conversationID, new Map());
+      const bucket = state.events.get(conversationID);
+      for (const event of result.events) { bucket.set(event.seq, event); cursor = Math.max(cursor, event.seq); }
+      await cacheEvents(result.events);
+      if (result.events.length < 200) break;
+    }
+    if (state.selected?.id === conversationID) renderEvents();
+  }
+
+  function renderEvents() {
+    const section = $('events'); section.replaceChildren();
+    const events = [...(state.events.get(state.selected.id)?.values() || [])].sort((a,b) => a.seq-b.seq);
+    if (!events.length) { const p = document.createElement('p'); p.id='empty'; p.textContent='还没有消息'; section.append(p); return; }
+    for (const event of events) {
+      const node = document.createElement('div');
+      if (event.type === 'message.created') {
+        node.className = 'event' + (event.sender_id === state.user.id ? ' mine' : '');
+        node.textContent = event.payload.text;
+      } else {
+        node.className = 'system';
+        const labels={'conversation.created':'会话已创建','member.joined':'有成员加入了会话','member.left':'有成员退出了会话','member.removed':'有成员被移出会话','conversation.renamed':'会话名称已更新'};
+        node.textContent = labels[event.type] || event.type;
+      }
+      section.append(node);
+    }
+    section.scrollTop = section.scrollHeight;
+    const conversationID=state.selected.id; const readSeq=contiguousSeq(state.selected,state.events.get(conversationID));
+    if (readSeq >= state.selected.joined_seq) {
+      clearTimeout(state.readTimers.get(conversationID));
+      state.readTimers.set(conversationID,setTimeout(async()=>{ try { await api(`/api/conversations/${conversationID}/read`, {method:'POST', body:JSON.stringify({seq:readSeq})}); const conversation=state.conversations.find(c=>c.id===conversationID); if(conversation) conversation.last_read_seq=Math.max(conversation.last_read_seq,readSeq); renderConversations(); } catch {} },1000));
+    }
+  }
+
+  function connect() {
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const socket = new WebSocket(`${protocol}//${location.host}/ws`); state.socket = socket;
+    socket.onopen = () => { state.reconnect = 500; $('connection').textContent = '已连接'; };
+    socket.onclose = () => { $('connection').textContent = '连接断开，正在重连'; setTimeout(connect, state.reconnect); state.reconnect = Math.min(state.reconnect*2, 10000); };
+    socket.onmessage = async ({data}) => {
+      const message = JSON.parse(data);
+      if (message.type === 'conversation.event') {
+        const event = message.event;
+        if (!state.events.has(event.conversation_id)) state.events.set(event.conversation_id, new Map());
+        const bucket = state.events.get(event.conversation_id);
+        const known = bucket.size ? Math.max(...bucket.keys()) : 0;
+        if (known && event.seq > known + 1) await syncEvents(event.conversation_id, known);
+        bucket.set(event.seq, event);
+        await cacheEvents([event]);
+        const conversation = state.conversations.find(c => c.id === event.conversation_id);
+        if (conversation) conversation.last_seq = Math.max(conversation.last_seq, event.seq);
+        if (conversation && event.type === 'conversation.renamed') conversation.title = event.payload.title;
+        if (state.selected?.id === event.conversation_id) renderEvents();
+        renderConversations();
+      } else if (message.type === 'conversation.redirected') {
+        const wasSelected = state.selected?.id === message.from_conversation_id;
+        await refreshConversations();
+        if (wasSelected) {
+          const existing = state.conversations.find(c => c.id === message.conversation_id);
+          if (existing) await selectConversation(existing);
+        }
+      } else if (message.type === 'error') showNotice(message.code);
+    };
+  }
+
+  $('create').onsubmit = async event => {
+    event.preventDefault(); showNotice();
+    try {
+      const conversation = await api('/api/conversations', {method:'POST', body:JSON.stringify({kind:$('kind').value,title:$('title').value})});
+      $('title').value=''; await refreshConversations(); await selectConversation(conversation);
+    } catch (error) { showNotice(error.message); }
+  };
+
+  $('composer').onsubmit = event => {
+    event.preventDefault(); const text=$('message').value;
+    if (!text || state.socket?.readyState !== WebSocket.OPEN) return;
+    state.socket.send(JSON.stringify({type:'message.send',request_id:crypto.randomUUID(),conversation_id:state.selected.id,client_message_id:crypto.randomUUID(),content:{text}}));
+    $('message').value='';
+  };
+
+  $('invite').onclick = async () => {
+    try {
+      const result = await api(`/api/conversations/${state.selected.id}/invites`, {method:'POST',body:'{}'});
+      $('invite-url').value=result.url; $('invite-dialog').showModal();
+    } catch (error) { showNotice(error.message); }
+  };
+  $('copy').onclick = () => navigator.clipboard.writeText($('invite-url').value);
+  $('rename').onclick = async () => {
+    const title = prompt('新的会话名称', state.selected.title || ''); if (title === null) return;
+    try { await api(`/api/conversations/${state.selected.id}`, {method:'PATCH',body:JSON.stringify({title})}); }
+    catch (error) { showNotice(error.message); }
+  };
+  $('members').onclick = async () => {
+    try {
+      const result = await api(`/api/conversations/${state.selected.id}/members`);
+      const list = $('member-list'); list.replaceChildren();
+      for (const member of result.members) {
+        const row = document.createElement('div'); row.className='row'; row.style.justifyContent='space-between';
+        const name = document.createElement('span'); name.textContent=`${member.display_name || member.username || member.user_id} · ${member.role}${member.status === 'active' ? '' : ` · ${member.status}`}`; row.append(name);
+        const canRemove = state.selected.status === 'active' && member.status === 'active' && member.user_id !== state.user.id && member.role !== 'owner' && (state.selected.role === 'owner' || (state.selected.role === 'admin' && member.role === 'member'));
+        if (canRemove) { const remove=document.createElement('button'); remove.type='button'; remove.textContent='移除'; remove.onclick=async()=>{ if(!confirm('确定移除此成员？')) return; await api(`/api/conversations/${state.selected.id}/members/${member.user_id}`,{method:'DELETE'}); row.remove(); }; row.append(remove); }
+        list.append(row);
+      }
+      $('members-dialog').showModal();
+    } catch (error) { showNotice(error.message); }
+  };
+  $('leave').onclick = async () => {
+    if (!confirm('确定退出这个会话？')) return;
+    try { await api(`/api/conversations/${state.selected.id}`, {method:'DELETE'}); state.selected=null; await refreshConversations(); $('events').replaceChildren(); $('conversation-title').textContent='请选择会话'; }
+    catch (error) { showNotice(error.message); }
+  };
+  $('logout').onclick = async () => { await api('/auth/logout',{method:'POST',body:'{}'}); if(state.cache) state.cache.close(); indexedDB.deleteDatabase(`flame-chat-${state.user.id}`); location.href='/'; };
+  bootstrap().catch(error => showNotice(error.message));
+})();
+</script>
+</body>
+</html>

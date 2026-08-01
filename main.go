@@ -2,295 +2,128 @@ package main
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
-	"fmt"
-	"html/template"
-	"log"
+	"errors"
+	"log/slog"
 	"net/http"
-	"strings"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
-	"github.com/google/uuid"
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/gorilla/mux"
 )
 
-type Conversation struct {
-	ID      string   `json:"id"`
-	Name    string   `json:"name"`
-	Members []string `json:"members"`
-}
-
-type Message struct {
-	ID             string    `json:"id"`
-	FromUser       string    `json:"user_id"`
-	ConversationID string    `json:"conversation_id"`
-	Content        string    `json:"content"`
-	CreatedAt      time.Time `json:"created_at"`
-}
-
-type sessionId string
-
-const userIDKey sessionId = "user_id"
-
-type H map[string]any
-
-type Server struct {
-	db *sql.DB
-}
-
-func NewServer() (*Server, error) {
-	s := &Server{}
-	if err := s.initDB(); err != nil {
-		return nil, fmt.Errorf("failed to initialize database: %v", err)
-	}
-	return s, nil
-}
-
-func (s *Server) initDB() error {
-	var err error
-	s.db, err = sql.Open("sqlite3", "./chat.db")
-	if err != nil {
-		return err
-	}
-	_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS conversations (
-		id TEXT PRIMARY KEY,
-		name TEXT NOT NULL,
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-	)`)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS conversation_members (
-			conversation_id TEXT NOT NULL,
-			user_id TEXT NOT NULL,
-			PRIMARY KEY (conversation_id, user_id),
-			FOREIGN KEY (conversation_id) REFERENCES conversations(id),
-			FOREIGN KEY (user_id) REFERENCES users(id)
-		)
-	`)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS messages (
-		id TEXT PRIMARY KEY,
-		user_id TEXT NOT NULL,
-		conversation_id TEXT NOT NULL,
-		content TEXT NOT NULL,
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		FOREIGN KEY (conversation_id) REFERENCES conversations(id),
-		FOREIGN KEY (user_id) REFERENCES users(id)
-	)`)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-// Render renders an HTML template with the provided data.
-func (reader *Server) Render(w http.ResponseWriter, templateName string, data H) {
-	tmpl, err := template.ParseFiles("templates/layout.html", "templates/"+templateName+".html")
-	// Parse templates from embedded file system
-	// tmpl, err := template.New("").ParseFS(templates.Files, "layout.html", templateName+".html")
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	// Execute "index.html" within the layout and write to response
-	err = tmpl.ExecuteTemplate(w, "layout", data)
-	if err != nil {
-		log.Println(err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-}
-
-func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var token string
-		cookie, err := r.Cookie("token")
-		if err == nil {
-			token = cookie.Value
-		}
-		if token == "" {
-			authorization := r.Header.Get("Authorization")
-			token = strings.TrimPrefix(authorization, "Bearer ")
-		}
-		var email string = "song940@gmail.com"
-		if r.URL.Query().Has("user_id") {
-			email = r.URL.Query().Get("user_id")
-		}
-		if token == "" && email == "" {
-			http.Error(w, "Missing authorization token", http.StatusUnauthorized)
-			return
-		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userIDKey, email)))
-	}
-}
-
-func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.getMessages(w, r)
-	case http.MethodPost:
-		s.createMessage(w, r)
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.getConversations(w, r)
-	case http.MethodPost:
-		s.createConversation(w, r)
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-func (s *Server) createConversation(w http.ResponseWriter, r *http.Request) {
-	var conversation Conversation
-	if r.Header.Get("Content-Type") == "application/json" {
-		if err := json.NewDecoder(r.Body).Decode(&conversation); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-	} else {
-		r.ParseForm()
-		conversation.ID = uuid.New().String()
-		conversation.Name = r.FormValue("name")
-		conversation.Members = strings.Split(r.FormValue("members"), ",")
-	}
-	result, err := s.db.Exec("INSERT INTO conversations (id, name) VALUES (?, ?)", conversation.ID, conversation.Name)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	id, err := result.LastInsertId()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	log.Println("createConversation", id)
-	for _, member := range conversation.Members {
-		s.db.Exec("INSERT INTO conversation_members (conversation_id, user_id) VALUES (?, ?)", conversation.ID, member)
-	}
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(conversation)
-}
-
-func (s *Server) getMessages(w http.ResponseWriter, r *http.Request) {
-	email := r.Context().Value(userIDKey).(string)
-	var limit int = 10
-	var lastSinceId string
-	if r.URL.Query().Has("offset") {
-		lastSinceId = r.URL.Query().Get("offset")
-	}
-	rows, err := s.db.Query(`select * from messages where conversation_id in (select conversation_id from conversation_members where user_id = ?) and created_at > ? order by created_at limit ?`, email, lastSinceId, limit)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-	messages := []Message{}
-	for rows.Next() {
-		var message Message
-		if err := rows.Scan(&message.ID, &message.FromUser, &message.ConversationID, &message.Content, &message.CreatedAt); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		messages = append(messages, message)
-	}
-	json.NewEncoder(w).Encode(messages)
-}
-
-func (s *Server) createMessage(w http.ResponseWriter, r *http.Request) {
-	var message Message
-	email := r.Context().Value(userIDKey).(string)
-	message.FromUser = email
-	if r.Header.Get("Content-Type") == "application/json" {
-		if err := json.NewDecoder(r.Body).Decode(&message); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-	} else {
-		r.ParseForm()
-		message.ID = uuid.New().String()
-		message.ConversationID = r.FormValue("conversation_id")
-		message.Content = r.FormValue("content")
-	}
-	result, err := s.db.Exec("INSERT INTO messages (id, user_id, conversation_id, content) VALUES (?, ?, ?, ?)", message.ID, message.FromUser, message.ConversationID, message.Content)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	id, err := result.LastInsertId()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	log.Println("createMessage", id)
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(message)
-}
-
-func (s *Server) homeView(w http.ResponseWriter, r *http.Request) {
-	s.Render(w, "home", nil)
-}
-
-func (s *Server) getConversations(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(userIDKey).(string)
-	rows, err := s.db.Query(`SELECT id, name FROM conversations WHERE id IN (SELECT conversation_id FROM conversation_members WHERE user_id = ?)`, userID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-	conversations := []Conversation{}
-	for rows.Next() {
-		var conversation Conversation
-		if err := rows.Scan(&conversation.ID, &conversation.Name); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		rows, err := s.db.Query(`SELECT user_id FROM conversation_members WHERE conversation_id = ?`, conversation.ID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var email string
-			if err := rows.Scan(&email); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			conversation.Members = append(conversation.Members, email)
-		}
-		conversations = append(conversations, conversation)
-	}
-	if r.Header.Get("Content-Type") == "application/json" {
-		json.NewEncoder(w).Encode(conversations)
-	} else {
-		conversationId := r.FormValue("id")
-		s.Render(w, "conversations", H{
-			"Conversations":  conversations,
-			"ConversationId": conversationId,
-		})
-	}
-}
-
 func main() {
-	s, err := NewServer()
-	if err != nil {
-		log.Fatalf("Failed to initialize server: %v", err)
+	if err := run(); err != nil {
+		slog.Error("server stopped", "error", err)
+		os.Exit(1)
 	}
-	defer s.db.Close()
-	http.HandleFunc("/", s.homeView)
-	http.HandleFunc("/messages", s.authMiddleware(s.handleMessages))
-	http.HandleFunc("/conversations", s.authMiddleware(s.handleConversations))
-	http.ListenAndServe(":8080", nil)
+}
+
+func run() error {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	store, err := OpenStore(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx); err != nil {
+		return err
+	}
+	auth, err := NewAuth(ctx, store, cfg)
+	if err != nil {
+		return err
+	}
+	web, err := NewWeb()
+	if err != nil {
+		return err
+	}
+	hub := NewHub()
+	limiter := NewRateLimiter()
+	api := NewAPI(store, hub, cfg)
+	ws := NewWebSocketHandler(store, hub, cfg)
+
+	router := mux.NewRouter()
+	router.Handle("/", auth.Optional(http.HandlerFunc(web.Home))).Methods(http.MethodGet)
+	router.Handle("/invite/{token}", auth.Optional(http.HandlerFunc(web.Invite))).Methods(http.MethodGet)
+	router.Handle("/auth/login", limiter.LoginMiddleware(cfg, http.HandlerFunc(auth.Login))).Methods(http.MethodGet)
+	router.HandleFunc("/auth/callback", auth.Callback).Methods(http.MethodGet)
+	router.Handle("/auth/logout", auth.Required(auth.RequireSameOrigin(http.HandlerFunc(auth.Logout)))).Methods(http.MethodPost)
+
+	protected := router.PathPrefix("/api").Subrouter()
+	protected.Use(auth.Required, auth.RequireSameOrigin, limiter.MutationMiddleware)
+	protected.HandleFunc("/me", api.Me).Methods(http.MethodGet)
+	protected.HandleFunc("/conversations", api.ListConversations).Methods(http.MethodGet)
+	protected.HandleFunc("/conversations", api.CreateConversation).Methods(http.MethodPost)
+	protected.HandleFunc("/conversations/{id}", api.RenameConversation).Methods(http.MethodPatch)
+	protected.HandleFunc("/conversations/{id}", api.LeaveConversation).Methods(http.MethodDelete)
+	protected.HandleFunc("/conversations/{id}/members", api.ListMembers).Methods(http.MethodGet)
+	protected.HandleFunc("/conversations/{id}/members/{userID}", api.RemoveMember).Methods(http.MethodDelete)
+	protected.HandleFunc("/conversations/{id}/events", api.ListEvents).Methods(http.MethodGet)
+	protected.HandleFunc("/conversations/{id}/messages", api.SendMessage).Methods(http.MethodPost)
+	protected.HandleFunc("/conversations/{id}/read", api.UpdateRead).Methods(http.MethodPost)
+	protected.HandleFunc("/conversations/{id}/invites", api.CreateInvite).Methods(http.MethodPost)
+	protected.HandleFunc("/invites/{token}/accept", api.AcceptInvite).Methods(http.MethodPost)
+	router.Handle("/ws", auth.Required(ws)).Methods(http.MethodGet)
+	router.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }).Methods(http.MethodGet)
+	router.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := store.Ping(ctx); err != nil {
+			writeProblem(w, http.StatusServiceUnavailable, "not_ready", "database is unavailable")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}).Methods(http.MethodGet)
+
+	server := &http.Server{
+		Addr: cfg.HTTPAddr, Handler: securityHeaders(cfg, recoverer(requestLogger(router))),
+		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second,
+		WriteTimeout: 30 * time.Second, IdleTimeout: 90 * time.Second,
+	}
+	serverErrors := make(chan error, 1)
+	go cleanupLoop(ctx, store)
+	go func() {
+		slog.Info("chat server listening", "address", cfg.HTTPAddr, "base_url", cfg.BaseURL.String())
+		serverErrors <- server.ListenAndServe()
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		return server.Shutdown(shutdownCtx)
+	case err := <-serverErrors:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	}
+}
+
+func cleanupLoop(ctx context.Context, store *Store) {
+	if err := store.CleanupExpired(ctx); err != nil {
+		slog.Warn("initial cleanup failed", "error", err)
+	}
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cleanupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			err := store.CleanupExpired(cleanupCtx)
+			cancel()
+			if err != nil {
+				slog.Warn("expired record cleanup failed", "error", err)
+			}
+		}
+	}
 }
