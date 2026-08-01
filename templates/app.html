@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="https://my.lsong.org/favicon.ico?v=2">
+  <link rel="apple-touch-icon" href="https://my.lsong.org/apple-touch-icon.png?v=2">
   <title>Chat</title>
   <style>
     :root {
@@ -13,8 +15,8 @@
       --text: #18181b;
       --muted: #71717a;
       --line: #e4e4e7;
-      --accent: #2563eb;
-      --accent-soft: #eff6ff;
+      --accent: #7c3aed;
+      --accent-soft: #f3e8ff;
       --danger: #b91c1c;
       --danger-soft: #fef2f2;
     }
@@ -25,14 +27,15 @@
         --text: #fafafa;
         --muted: #a1a1aa;
         --line: #3f3f46;
-        --accent: #60a5fa;
-        --accent-soft: #172554;
+        --accent: #a78bfa;
+        --accent-soft: #2e1065;
         --danger: #f87171;
         --danger-soft: #450a0a;
       }
     }
     * { box-sizing: border-box; }
-    body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+    html, body { height: 100%; }
+    body { margin: 0; overflow: hidden; background: var(--bg); color: var(--text); font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, sans-serif; }
     button, input, textarea { font: inherit; border-radius: 9px; }
     button { border: 0; padding: 9px 15px; background: var(--text); color: var(--bg); font-weight: 650; cursor: pointer; }
     button.secondary { color: var(--text); background: transparent; border: 1px solid var(--line); }
@@ -47,23 +50,25 @@
     h3 { margin-bottom: 10px; font-size: 15px; }
     .muted { color: var(--muted); }
     .small { font-size: 13px; }
-    .topbar { min-height: 68px; border-bottom: 1px solid var(--line); background: var(--card); }
-    .topbar-inner { width: min(100% - 32px, 1180px); min-height: 68px; margin: auto; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
-    .brand { display: inline-flex; align-items: center; gap: 9px; color: var(--text); text-decoration: none; }
-    .brand-mark { display: grid; width: 23px; height: 23px; place-items: center; border-radius: 7px; background: var(--text); color: var(--bg); font-size: 13px; font-weight: 800; }
-    .account { display: flex; align-items: center; gap: 12px; }
+    .app-shell { height: 100%; display: grid; grid-template-columns: 64px minmax(0, 1fr); }
+    .module-nav { display: flex; min-height: 0; flex-direction: column; align-items: center; gap: 8px; padding: 10px 8px; background: var(--card); border-right: 1px solid var(--line); }
+    .nav-logo { display: grid; width: 40px; height: 40px; margin-bottom: 10px; place-items: center; border-radius: 10px; }
+    .nav-logo:hover { background: var(--bg); }
+    .nav-logo img { width: 28px; height: 28px; border-radius: 50%; }
+    .nav-spacer { flex: 1; }
+    .module-button { position: relative; display: grid; width: 40px; height: 40px; padding: 0; place-items: center; color: var(--muted); background: transparent; border-radius: 9px; }
+    .module-button:hover { color: var(--text); background: var(--bg); }
+    .module-button.active { color: var(--accent); background: var(--accent-soft); }
+    .module-button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .module-button::after { content: attr(aria-label); position: absolute; left: calc(100% + 10px); z-index: 10; padding: 5px 8px; color: var(--bg); background: var(--text); border-radius: 6px; font-size: 12px; font-weight: 600; white-space: nowrap; opacity: 0; pointer-events: none; transform: translateX(-4px); transition: opacity .12s, transform .12s; }
+    .module-button:hover::after, .module-button:focus-visible::after { opacity: 1; transform: translateX(0); }
     .avatar { width: 40px; height: 40px; flex: none; border-radius: 50%; background: var(--line); object-fit: cover; }
     .avatar.small { width: 30px; height: 30px; }
+    .nav-avatar { width: 32px; height: 32px; margin-top: 2px; }
     .identity-row { display: flex; min-width: 0; align-items: center; gap: 10px; }
-    .workspace { width: min(100% - 32px, 1240px); height: calc(100vh - 100px); min-height: 620px; margin: 16px auto; display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 16px; }
+    .workspace { position: relative; min-width: 0; min-height: 0; padding: 14px; }
     .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 1px 2px rgb(0 0 0 / 3%); }
-    .module-nav { align-self: start; padding: 10px; }
-    .module-button { display: flex; width: 100%; align-items: center; gap: 10px; padding: 11px 12px; color: var(--text); background: transparent; text-align: left; }
-    .module-button + .module-button { margin-top: 3px; }
-    .module-button:hover { background: var(--bg); }
-    .module-button.active { color: var(--accent); background: var(--accent-soft); }
-    .module-icon { width: 22px; text-align: center; }
-    .module { min-width: 0; min-height: 0; }
+    .module { width: 100%; height: 100%; min-width: 0; min-height: 0; }
     .module[hidden] { display: none; }
     .chat-module { display: grid; grid-template-columns: 290px minmax(0, 1fr); gap: 16px; }
     .sidebar { display: flex; min-height: 0; flex-direction: column; overflow: hidden; }
@@ -121,14 +126,11 @@
     .stack-form { display: grid; gap: 12px; }
     .settings-list { display: grid; gap: 14px; max-width: 640px; }
     .settings-item { padding: 16px; border: 1px solid var(--line); border-radius: 11px; }
-    #notice { width: min(100% - 32px, 1180px); min-height: 0; margin: 0 auto; }
-    #notice:not(:empty) { margin-top: 14px; padding: 11px 13px; color: var(--text); background: var(--accent-soft); border-radius: 9px; }
+    #notice { position: absolute; top: 22px; left: 50%; z-index: 20; max-width: min(560px, calc(100% - 32px)); min-height: 0; transform: translateX(-50%); box-shadow: 0 8px 24px rgb(0 0 0 / 10%); }
+    #notice:not(:empty) { padding: 11px 13px; color: var(--text); background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line)); border-radius: 9px; }
     #notice.error { color: var(--danger); background: var(--danger-soft); }
     :focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 2px; }
     @media (max-width: 800px) {
-      .workspace { height: auto; min-height: 0; grid-template-columns: 1fr; }
-      .module-nav { display: flex; position: sticky; top: 0; z-index: 2; gap: 4px; overflow-x: auto; }
-      .module-button { width: auto; flex: 1; justify-content: center; }
       .chat-module { grid-template-columns: 1fr; }
       .sidebar { max-height: 430px; }
       .chat { min-height: 70vh; }
@@ -137,8 +139,9 @@
       .settings-section.wide { grid-column: auto; }
     }
     @media (max-width: 520px) {
-      .account #identity { display: none; }
-      .workspace, .topbar-inner, #notice { width: min(100% - 20px, 1180px); }
+      .app-shell { grid-template-columns: 54px minmax(0, 1fr); }
+      .workspace { padding: 8px; }
+      .module-nav { padding-inline: 6px; }
       .chat-head, .inline-form { align-items: stretch; flex-direction: column; }
       #composer { align-items: flex-end; flex-direction: row; }
       .message-row { max-width: 92%; }
@@ -146,23 +149,17 @@
   </style>
 </head>
 <body>
-  <header class="topbar">
-    <div class="topbar-inner">
-      <a class="brand" href="/"><span class="brand-mark">C</span><h1>Chat</h1></a>
-      <nav class="account" aria-label="账户">
-        <img id="identity-avatar" class="avatar small" alt="" referrerpolicy="no-referrer">
-        <span id="identity" class="muted">正在登录…</span>
-        <button id="logout" class="link" type="button">退出</button>
-      </nav>
-    </div>
-  </header>
-  <div id="notice" role="status" aria-live="polite"></div>
-  <div class="workspace">
-    <nav class="card module-nav" aria-label="主导航">
-      <button class="module-button active" type="button" data-module="chat-module"><span class="module-icon">💬</span>Chat</button>
-      <button class="module-button" type="button" data-module="contacts-module"><span class="module-icon">👥</span>Contacts</button>
-      <button class="module-button" type="button" data-module="app-settings-module"><span class="module-icon">⚙️</span>Settings</button>
+  <div class="app-shell">
+    <nav class="module-nav" aria-label="主导航">
+      <a class="nav-logo" href="/" aria-label="Chat"><img src="https://my.lsong.org/icon-192.png?v=2" alt=""></a>
+      <button class="module-button active" type="button" data-module="chat-module" aria-label="Chat"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/></svg></button>
+      <button class="module-button" type="button" data-module="contacts-module" aria-label="Contacts"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></button>
+      <div class="nav-spacer"></div>
+      <button class="module-button" type="button" data-module="app-settings-module" aria-label="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06-2.83 2.83-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21h-4v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06-2.83-2.83.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3v-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06 2.83-2.83.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3h4v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06 2.83 2.83-.06.06A1.65 1.65 0 0 0 19.4 9c.12.6.65 1.03 1.26 1.03H21v4h-.34c-.61 0-1.14.42-1.26.97z"/></svg></button>
+      <img id="identity-avatar" class="avatar nav-avatar" alt="" title="当前账户" referrerpolicy="no-referrer">
     </nav>
+    <div class="workspace">
+      <div id="notice" role="status" aria-live="polite"></div>
     <section id="chat-module" class="module chat-module">
       <aside class="card sidebar">
       <div class="sidebar-head">
@@ -283,6 +280,7 @@
         <section class="settings-item"><h3>会话</h3><button id="settings-logout" class="danger" type="button">退出登录</button></section>
       </div>
     </section>
+    </div>
   </div>
 <script>
 (() => {
@@ -293,7 +291,7 @@
     const headers = new Headers(options.headers || {});
     if (options.body) headers.set('Content-Type', 'application/json');
     const response = await fetch(endpoint, {...options, headers});
-    if (response.status === 401) { location.href = '/auth/login'; throw new Error('需要登录'); }
+    if (response.status === 401) { location.href = '/'; throw new Error('需要登录'); }
     if (!response.ok) {
       const problem = await response.json().catch(() => ({}));
       throw new Error(problem.error?.message || `请求失败 (${response.status})`);
@@ -446,7 +444,7 @@
     state.user = await api('/api/me');
     state.cache = await openCache().catch(() => null);
     $('identity-avatar').src = state.user.avatar_url;
-    $('identity').textContent = userLabel(state.user);
+    $('identity-avatar').title = userLabel(state.user);
     $('settings-identity').textContent = state.user.display_name || state.user.username || 'Chat user';
     $('settings-email').textContent = state.user.email;
     await refreshConversations();
@@ -903,7 +901,6 @@
     indexedDB.deleteDatabase(`chat-${state.user.id}`);
     location.href = '/';
   }
-  $('logout').onclick = logout;
   $('settings-logout').onclick = logout;
 
   bootstrap().catch(error => showNotice(error.message, true));

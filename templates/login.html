@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="https://my.lsong.org/favicon.ico?v=2">
+  <link rel="apple-touch-icon" href="https://my.lsong.org/apple-touch-icon.png?v=2">
+  <title>登录 · Chat</title>
+  <style>
+    :root { color-scheme:light dark; --bg:#fafafa; --card:#fff; --text:#18181b; --muted:#71717a; --line:#e4e4e7; --accent:#7c3aed; --danger:#b91c1c; }
+    @media (prefers-color-scheme:dark) { :root { --bg:#09090b; --card:#18181b; --text:#fafafa; --muted:#a1a1aa; --line:#3f3f46; --accent:#8b5cf6; --danger:#f87171; } }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:var(--bg); color:var(--text); font:15px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif; }
+    .shell { width:min(100% - 32px,720px); min-height:100vh; margin:auto; display:grid; grid-template-rows:72px 1fr 72px; }
+    header { display:flex; align-items:center; justify-content:space-between; }
+    .brand { display:inline-flex; align-items:center; gap:10px; color:var(--text); font-size:18px; font-weight:750; letter-spacing:-.03em; text-decoration:none; }
+    .logo { width:24px; height:24px; border-radius:50%; }
+    .mycenter { color:var(--muted); font-size:14px; text-decoration:none; }
+    main { display:flex; align-items:center; }
+    .card { width:100%; padding:24px; background:var(--card); border:1px solid var(--line); border-radius:14px; box-shadow:0 1px 2px rgb(0 0 0 / 4%); }
+    h1 { margin:0; font-size:24px; line-height:1.25; letter-spacing:-.035em; }
+    .lead { margin:5px 0 18px; color:var(--muted); }
+    form { display:grid; gap:13px; }
+    label { display:block; margin-bottom:4px; font-weight:650; }
+    input,button,.button { width:100%; min-height:44px; border-radius:9px; font:inherit; }
+    input { padding:10px 12px; color:var(--text); background:var(--bg); border:1px solid var(--line); }
+    input:focus { border-color:var(--accent); outline:3px solid color-mix(in srgb,var(--accent) 24%,transparent); }
+    button,.button { display:flex; align-items:center; justify-content:center; padding:10px 14px; font-weight:700; cursor:pointer; }
+    button { color:var(--bg); background:var(--text); border:0; }
+    button:disabled { cursor:not-allowed; opacity:.55; }
+    .divider { display:flex; align-items:center; gap:12px; margin:17px 0; color:var(--muted); font-size:13px; }
+    .divider::before,.divider::after { content:""; height:1px; flex:1; background:var(--line); }
+    .button { color:var(--text); background:transparent; border:1px solid var(--line); text-decoration:none; }
+    #status { min-height:22px; margin:12px 0 0; color:var(--muted); }
+    #status.error { color:var(--danger); }
+    footer { display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:14px; }
+    :focus-visible { outline:3px solid color-mix(in srgb,var(--accent) 45%,transparent); outline-offset:2px; }
+    @media (max-width:520px) { .shell { grid-template-rows:64px 1fr 64px; } .card { padding:20px; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <a class="brand" href="/"><img class="logo" src="https://my.lsong.org/icon-192.png?v=2" alt=""><span>Chat</span></a>
+      <a class="mycenter" href="https://my.lsong.org">MyCenter</a>
+    </header>
+    <main>
+      <section class="card">
+        <h1>欢迎回来</h1>
+        <p class="lead">输入姓名和邮箱即可开始聊天。</p>
+        <form id="login-form">
+          <div><label for="name">姓名</label><input id="name" name="name" maxlength="80" autocomplete="name" required autofocus></div>
+          <div><label for="email">邮箱</label><input id="email" name="email" type="email" autocomplete="email" required></div>
+          <button type="submit">登录</button>
+        </form>
+        <p id="status" role="status" aria-live="polite"></p>
+        <div class="divider">或者</div>
+        <a id="oidc-login" class="button" href="/auth/login?return_to={{.ReturnTo | urlquery}}">使用 MyCenter 获取邮箱</a>
+      </section>
+    </main>
+    <footer>Simple chat, identified by email.</footer>
+  </div>
+  <script>
+  (() => {
+    const form = document.getElementById('login-form');
+    const status = document.getElementById('status');
+    const returnTo = {{.ReturnTo}};
+    form.onsubmit = async event => {
+      event.preventDefault();
+      const button = form.querySelector('button');
+      button.disabled = true;
+      button.textContent = '正在登录…';
+      status.className = '';
+      status.textContent = '';
+      try {
+        const response = await fetch('/auth/email', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({name:form.name.value.trim(),email:form.email.value.trim()})
+        });
+        if (!response.ok) {
+          const problem = await response.json().catch(() => ({}));
+          throw new Error(problem.error?.message || `登录失败 (${response.status})`);
+        }
+        location.href = returnTo;
+      } catch (error) {
+        status.className = 'error';
+        status.textContent = error.message;
+        button.disabled = false;
+        button.textContent = '登录';
+      }
+    };
+  })();
+  </script>
+</body>
+</html>

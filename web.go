@@ -10,11 +10,16 @@ import (
 )
 
 type Web struct {
+	login  *template.Template
 	app    *template.Template
 	invite *template.Template
 }
 
 func NewWeb() (*Web, error) {
+	login, err := template.ParseFS(templates.Files, "login.html")
+	if err != nil {
+		return nil, err
+	}
 	app, err := template.ParseFS(templates.Files, "app.html")
 	if err != nil {
 		return nil, err
@@ -23,12 +28,13 @@ func NewWeb() (*Web, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Web{app: app, invite: invite}, nil
+	return &Web{login: login, app: app, invite: invite}, nil
 }
 
 func (web *Web) Home(w http.ResponseWriter, r *http.Request) {
 	if _, ok := currentUser(r.Context()); !ok {
-		http.Redirect(w, r, "/auth/login", http.StatusFound)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_ = web.login.Execute(w, map[string]string{"ReturnTo": safeReturnTo(r.URL.Query().Get("return_to"))})
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -42,7 +48,7 @@ func (web *Web) Invite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, ok := currentUser(r.Context()); !ok {
-		http.Redirect(w, r, "/auth/login?return_to="+url.QueryEscape(r.URL.Path), http.StatusFound)
+		http.Redirect(w, r, "/?return_to="+url.QueryEscape(r.URL.Path), http.StatusFound)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

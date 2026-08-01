@@ -6,7 +6,7 @@ This document is the wire contract between `chat-server`, Flame iOS, and the bro
 
 Email is the unique chat identity across every client. Internal UUIDs are database references and may appear in packets, but clients must not use them to decide whether two people are the same user. OIDC `sub` identifies an authorization-provider account only; after OIDC callback its email resolves the chat user.
 
-Native login:
+Default login for iOS and Web:
 
 ```http
 POST /auth/email
@@ -16,7 +16,7 @@ Origin: https://chat.example.com
 {"name":"Alice","email":"alice@example.com"}
 ```
 
-The response is the user object below and a `chat_session` or `__Host-chat_session` HttpOnly cookie. The native flow does not prove ownership of the email; public deployments should add email verification before exposing it.
+The response is the user object below and a `chat_session` or `__Host-chat_session` HttpOnly cookie. This flow does not prove ownership of the email; public deployments should add email verification before exposing it.
 
 ```json
 {
@@ -29,7 +29,7 @@ The response is the user object below and a `chat_session` or `__Host-chat_sessi
 }
 ```
 
-Browser login starts at `GET /auth/login`. The server uses Authorization Code, PKCE, state, and nonce, reads `name` and `email` from the verified OIDC result, resolves the same email identity, then issues the same chat session cookie. Clients never send the provider access token to chat APIs.
+An unauthenticated browser `GET /` renders the Name + Email form and submits the same `POST /auth/email` packet. As an optional convenience, `GET /auth/login` starts MyCenter OIDC. The server uses Authorization Code, PKCE, state, and nonce, reads `name` and `email` from the verified result, resolves the same email identity, then issues the same chat session cookie. Clients never send the provider access token to chat APIs.
 
 All `/api/*` and `/ws` requests use this cookie. Mutations send an allowed `Origin`. `POST /auth/logout` deletes the server session and expires the cookie.
 

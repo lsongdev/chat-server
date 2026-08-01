@@ -1,6 +1,6 @@
 # Flame Chat
 
-一个单机优先的轻量聊天服务：Go、PostgreSQL、OIDC 和 WebSocket。原生客户端只需姓名和邮箱即可建立本站会话，浏览器通过 OIDC 获取姓名和邮箱；两种方式会按规范化邮箱归并到同一个聊天用户。
+一个单机优先的轻量聊天服务：Go、PostgreSQL 和 WebSocket。所有客户端只需姓名和邮箱即可建立本站会话；Web 也可以选择通过 OIDC 获取邮箱。两种方式都会按规范化邮箱归并到同一个聊天用户。
 
 产品中只有“会话”这一种交流容器。会话管理员使用完整邮件地址精确查找并添加已经登录过 Chat 的用户。
 
@@ -8,8 +8,8 @@
 
 ## 登录方式
 
-- iOS 等原生客户端：`POST /auth/email`，JSON 只包含 `name` 和 `email`，成功后使用服务端设置的 HttpOnly Cookie。
-- Web 浏览器：访问 `GET /auth/login`，完成 OIDC Authorization Code + PKCE 后由服务端读取姓名和邮箱并设置同一种 Cookie。
+- iOS 和 Web：`POST /auth/email`，JSON 只包含 `name` 和 `email`，成功后使用服务端设置的 HttpOnly Cookie。Web 根页面在未登录时显示该表单。
+- 可选 MyCenter 登录：访问 `GET /auth/login`，完成 OIDC Authorization Code + PKCE 后由服务端读取姓名和邮箱，并设置同一种 Cookie。
 
 简易邮箱登录不验证邮箱所有权，适合受信部署或早期产品。公开部署如需防止冒用，应在这个接口前增加邮件验证码或组织网关。
 
@@ -17,7 +17,7 @@
 
 完整设计见 [docs/docs.md](docs/docs.md)，逐字段通信约定和消息报文见 [docs/protocol.md](docs/protocol.md)。
 
-## 准备 OIDC Client
+## 可选：准备 OIDC Client
 
 在 `https://my.lsong.org` 创建 confidential client：
 

@@ -4,7 +4,7 @@
 
 部署范围：单机、单个 Go 进程、单个 PostgreSQL 实例
 
-认证来源：原生客户端姓名+邮箱；Web 使用 `https://my.lsong.org` OIDC
+身份来源：所有客户端均可使用姓名+邮箱；Web 可选用 `https://my.lsong.org` OIDC 获取邮箱
 
 更新时间：2026-08-01
 
@@ -15,7 +15,7 @@ V1 采用以下组合：
 - Go HTTP/WebSocket 服务；
 - PostgreSQL 作为唯一持久化数据库；
 - 进程内 Hub 完成在线消息分发；
-- 原生客户端通过姓名和规范化邮箱登录，Web 通过 OIDC Authorization Code Flow 获取同样的资料；
+- 所有客户端都可以通过姓名和规范化邮箱登录，Web 也可通过 OIDC Authorization Code Flow 获取同样的资料；
 - 客户端使用会话内单调递增的 `seq` 同步历史和补齐离线消息；
 - 暂不引入 Redis、Kafka、NATS、独立用户系统或微服务。
 
@@ -25,7 +25,7 @@ SQLite 在单机聊天服务中并非不可用，但本项目不采用它。原�
 
 ### 2.1 V1 目标
 
-- 用户通过现有用户中心登录，本站不保存密码；
+- 用户只需姓名和邮箱即可聊天，本站不保存密码；
 - 用户可以创建会话、添加或移除成员；
 - 账户、成员、搜索结果与消息使用邮件地址对应的 Gravatar 头像；
 - 产品中只有会话这一种交流容器；
@@ -76,7 +76,7 @@ PostgreSQL 是消息事实来源，WebSocket 只是低延迟通知通道。只�
 
 ## 4. 登录与 OIDC 接入设计
 
-原生客户端调用 `POST /auth/email`，只提交 `name` 和 `email`。服务端规范化邮箱、创建或更新用户并签发本站 opaque session。Web 浏览器继续使用 OIDC，回调得到邮箱后也落到同一个用户；已有邮箱匹配必须唯一，否则拒绝自动归并。
+原生客户端和 Web 登录页都调用 `POST /auth/email`，只提交 `name` 和 `email`。服务端规范化邮箱、创建或更新用户并签发本站 opaque session。Web 还可选择 OIDC，回调得到邮箱后也落到同一个用户；已有邮箱匹配必须唯一，否则拒绝自动归并。OIDC 是获取邮箱资料的可选手段，不是 Chat 身份模型本身。
 
 该简易流程不证明调用者拥有邮箱，只适用于受信环境或早期产品。公开部署应增加邮件验证码或在可信身份网关后开放。
 
@@ -107,7 +107,22 @@ Discovery 文档没有声明 `registration_endpoint`，因此 V1 假定在用户
 
 生产环境必须使用 HTTPS，redirect URI 不允许使用通配符。
 
-### 4.2 登录流程
+### 4.2 默认 Name + Email 登录流程
+
+```text
+Client                  Chat Server                 PostgreSQL
+   | POST /auth/email       |                           |
+   | {name,email}           |                           |
+   |----------------------->| 规范化 email              |
+   |                        | 按 email 创建/更新用户     |
+   |                        |-------------------------->|
+   | Set-Cookie + user      |                           |
+   |<-----------------------|                           |
+```
+
+Web 未登录访问 `/` 时直接显示姓名和邮箱表单；邀请链接会把原路径放入 `return_to`，登录成功后继续加入流程。
+
+### 4.3 可选 OIDC 登录流程
 
 ```text
 Browser                 Chat Server                 my.lsong.org
