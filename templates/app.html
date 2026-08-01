@@ -865,7 +865,13 @@
     await refreshConversations();
     $('settings-panel').hidden = true;
     $('settings').disabled = true;
+    $('settings').textContent = '会话设置';
+    $('settings').setAttribute('aria-expanded', 'false');
     $('conversation-title').textContent = '请选择会话';
+    $('message').value = '';
+    $('message').disabled = true;
+    $('composer').querySelector('button').disabled = true;
+    resizeComposer();
     $('events').replaceChildren();
     const empty = document.createElement('p');
     empty.className = 'empty';
