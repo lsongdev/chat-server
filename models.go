@@ -53,6 +53,17 @@ type UserLookup struct {
 	AvatarURL     string    `json:"avatar_url"`
 }
 
+type Contact struct {
+	ID         uuid.UUID  `json:"id"`
+	Name       string     `json:"name"`
+	Email      string     `json:"email"`
+	Note       string     `json:"note,omitempty"`
+	LinkedUser *uuid.UUID `json:"linked_user_id,omitempty"`
+	AvatarURL  string     `json:"avatar_url"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
+}
+
 type Event struct {
 	ConversationID uuid.UUID       `json:"conversation_id"`
 	Seq            int64           `json:"seq"`

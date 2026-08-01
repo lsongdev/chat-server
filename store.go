@@ -152,6 +152,23 @@ func (s *Store) UpsertOIDCUser(ctx context.Context, issuer string, claims OIDCCl
 	return user, err
 }
 
+// UpsertEmailUser is the intentionally small native-client identity flow. Email is
+// the stable login identifier; no password or provider token is stored.
+func (s *Store) UpsertEmailUser(ctx context.Context, name, email string) (User, error) {
+	user := User{ID: uuid.New()}
+	err := s.db.QueryRowContext(ctx, `
+		INSERT INTO users(id,oidc_issuer,oidc_subject,display_name,email,email_verified,last_login_at)
+		VALUES($1,'email',$2,NULLIF($3,''),$2,true,now())
+		ON CONFLICT (oidc_issuer,oidc_subject) DO UPDATE SET
+			display_name=EXCLUDED.display_name,email=EXCLUDED.email,email_verified=true,
+			last_login_at=now(),updated_at=now()
+		RETURNING id,oidc_subject,COALESCE(username,''),COALESCE(display_name,''),
+			COALESCE(email,''),email_verified,COALESCE(picture_url,''),status`,
+		user.ID, email, name).Scan(&user.ID, &user.Subject, &user.Username,
+		&user.DisplayName, &user.Email, &user.EmailVerified, &user.PictureURL, &user.Status)
+	return user, err
+}
+
 func (s *Store) CreateSession(ctx context.Context, userID uuid.UUID, rawToken, userAgent, ip string, expiresAt time.Time) error {
 	hash := sha256.Sum256([]byte(rawToken))
 	var ipValue any
@@ -430,6 +447,137 @@ func (s *Store) RenameConversation(ctx context.Context, actorID, conversationID 
 		return Event{}, err
 	}
 	return event, nil
+}
+
+func (s *Store) DeleteConversation(ctx context.Context, actorID, conversationID uuid.UUID) ([]uuid.UUID, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var allowed bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT role='owner' AND status='active' FROM conversation_members
+		WHERE conversation_id=$1 AND user_id=$2`, conversationID, actorID).Scan(&allowed); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	} else if err != nil {
+		return nil, err
+	}
+	if !allowed {
+		return nil, ErrForbidden
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT user_id FROM conversation_members WHERE conversation_id=$1`, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	var memberIDs []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		memberIDs = append(memberIDs, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM conversations WHERE id=$1`, conversationID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return memberIDs, nil
+}
+
+func (s *Store) UpdateMemberRole(ctx context.Context, actorID, conversationID, targetID uuid.UUID, role string) (Member, Event, error) {
+	if role != "admin" && role != "member" {
+		return Member{}, Event{}, ErrConflict
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Member{}, Event{}, err
+	}
+	defer tx.Rollback()
+	var seq int64
+	if err := tx.QueryRowContext(ctx, `SELECT last_seq FROM conversations WHERE id=$1 FOR UPDATE`, conversationID).Scan(&seq); errors.Is(err, sql.ErrNoRows) {
+		return Member{}, Event{}, ErrNotFound
+	} else if err != nil {
+		return Member{}, Event{}, err
+	}
+	var actorRole, actorStatus string
+	if err := tx.QueryRowContext(ctx, `SELECT role,status FROM conversation_members WHERE conversation_id=$1 AND user_id=$2`, conversationID, actorID).Scan(&actorRole, &actorStatus); err != nil || actorRole != "owner" || actorStatus != "active" {
+		return Member{}, Event{}, ErrForbidden
+	}
+	var member Member
+	if err := tx.QueryRowContext(ctx, `
+		UPDATE conversation_members m SET role=$3,updated_at=now()
+		FROM users u WHERE m.conversation_id=$1 AND m.user_id=$2 AND m.user_id=u.id
+			AND m.status='active' AND m.role<>'owner'
+		RETURNING m.user_id,COALESCE(u.username,''),COALESCE(u.display_name,''),COALESCE(u.email,''),
+			u.email_verified,COALESCE(u.picture_url,''),m.role,m.status,m.joined_seq`, conversationID, targetID, role).Scan(
+		&member.UserID, &member.Username, &member.DisplayName, &member.Email, &member.EmailVerified, &member.PictureURL, &member.Role, &member.Status, &member.JoinedSeq); errors.Is(err, sql.ErrNoRows) {
+		return Member{}, Event{}, ErrForbidden
+	} else if err != nil {
+		return Member{}, Event{}, err
+	}
+	seq++
+	if _, err := tx.ExecContext(ctx, `UPDATE conversations SET last_seq=$2,updated_at=now() WHERE id=$1`, conversationID, seq); err != nil {
+		return Member{}, Event{}, err
+	}
+	payload, _ := json.Marshal(map[string]any{"user_id": targetID, "role": role})
+	event := Event{ConversationID: conversationID, Seq: seq, ID: uuid.New(), SenderID: &actorID, Type: "member.role_changed", Payload: payload}
+	if err := insertEvent(ctx, tx, &event, nil); err != nil {
+		return Member{}, Event{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Member{}, Event{}, err
+	}
+	return member, event, nil
+}
+
+func (s *Store) ListContacts(ctx context.Context, ownerID uuid.UUID) ([]Contact, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id,c.name,c.email,COALESCE(c.note,''),u.id,c.created_at,c.updated_at
+		FROM contacts c LEFT JOIN users u ON lower(u.email)=lower(c.email) AND u.status='active'
+		WHERE c.owner_id=$1 ORDER BY lower(c.name),lower(c.email)`, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var contacts []Contact
+	for rows.Next() {
+		var contact Contact
+		var linked uuid.NullUUID
+		if err := rows.Scan(&contact.ID, &contact.Name, &contact.Email, &contact.Note, &linked, &contact.CreatedAt, &contact.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if linked.Valid {
+			contact.LinkedUser = &linked.UUID
+		}
+		contacts = append(contacts, contact)
+	}
+	return contacts, rows.Err()
+}
+
+func (s *Store) SaveContact(ctx context.Context, ownerID, contactID uuid.UUID, name, email, note string) (Contact, error) {
+	var contact Contact
+	err := s.db.QueryRowContext(ctx, `INSERT INTO contacts(id,owner_id,name,email,note) VALUES($1,$2,$3,$4,NULLIF($5,''))
+		ON CONFLICT(owner_id,email) DO UPDATE SET name=EXCLUDED.name,note=EXCLUDED.note,updated_at=now()
+		RETURNING id,name,email,COALESCE(note,''),created_at,updated_at`, contactID, ownerID, name, email, note).Scan(
+		&contact.ID, &contact.Name, &contact.Email, &contact.Note, &contact.CreatedAt, &contact.UpdatedAt)
+	return contact, err
+}
+
+func (s *Store) DeleteContact(ctx context.Context, ownerID, contactID uuid.UUID) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM contacts WHERE id=$1 AND owner_id=$2`, contactID, ownerID)
+	if err != nil {
+		return err
+	}
+	if count, _ := result.RowsAffected(); count == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) LeaveConversation(ctx context.Context, userID, conversationID uuid.UUID) (Event, *uuid.UUID, error) {

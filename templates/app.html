@@ -191,11 +191,11 @@
             <div id="member-list"><p class="muted small">正在加载…</p></div>
           </section>
           <section class="settings-section wide">
-            <h3>退出会话</h3>
-            <p class="muted small">退出后将不能发送或接收新消息。</p>
+            <h3 id="leave-heading">退出会话</h3>
+            <p id="leave-description" class="muted small">退出后将不能发送或接收新消息。</p>
             <button id="leave" class="danger" type="button">退出会话</button>
             <div id="leave-confirm" class="danger-zone" hidden>
-              <p>确定退出当前会话吗？此操作不会删除其他成员的消息。</p>
+              <p id="leave-confirm-text">确定退出当前会话吗？此操作不会删除其他成员的消息。</p>
               <div style="display:flex;gap:8px;margin-top:10px">
                 <button id="leave-submit" class="danger" type="button">确认退出</button>
                 <button id="leave-cancel" class="secondary" type="button">取消</button>
@@ -487,6 +487,20 @@
       row.append(identityRow);
       const canRemove = state.selected.status === 'active' && member.status === 'active' && member.user_id !== state.user.id && member.role !== 'owner' && (state.selected.role === 'owner' || (state.selected.role === 'admin' && member.role === 'member'));
       if (canRemove) {
+        if (state.selected.role === 'owner') {
+          const roleButton = document.createElement('button');
+          roleButton.type = 'button';
+          roleButton.className = 'secondary';
+          roleButton.textContent = member.role === 'admin' ? '设为成员' : '设为管理员';
+          roleButton.onclick = async () => {
+            roleButton.disabled = true;
+            try {
+              await api(`/api/conversations/${state.selected.id}/members/${member.user_id}`, {method:'PATCH', body:JSON.stringify({role:member.role === 'admin' ? 'member' : 'admin'})});
+              await loadMembers();
+            } catch (error) { roleButton.disabled = false; showNotice(error.message, true); }
+          };
+          row.append(roleButton);
+        }
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.className = 'danger';
@@ -548,6 +562,12 @@
       $('member-email').disabled = !canManage;
       $('invite').disabled = !canManage;
       $('leave').disabled = state.selected.status !== 'active';
+      const deleting = state.selected.role === 'owner';
+      $('leave-heading').textContent = deleting ? '删除会话' : '退出会话';
+      $('leave-description').textContent = deleting ? '删除后所有成员都将失去该会话和消息。' : '退出后将不能发送或接收新消息。';
+      $('leave').textContent = deleting ? '删除会话' : '退出会话';
+      $('leave-confirm-text').textContent = deleting ? '确定为所有成员永久删除当前会话吗？' : '确定退出当前会话吗？此操作不会删除其他成员的消息。';
+      $('leave-submit').textContent = deleting ? '确认删除' : '确认退出';
       await loadMembers().catch(error => showNotice(error.message, true));
     }
   };
@@ -636,7 +656,8 @@
   $('leave-submit').onclick = async () => {
     $('leave-submit').disabled = true;
     try {
-      await api(`/api/conversations/${state.selected.id}`, {method:'DELETE'});
+      const deleting = state.selected.role === 'owner';
+      await api(deleting ? `/api/conversations/${state.selected.id}` : `/api/conversations/${state.selected.id}/leave`, {method:deleting ? 'DELETE' : 'POST'});
       state.selected = null;
       state.settingsOpen = false;
       await refreshConversations();
@@ -648,7 +669,7 @@
       empty.className = 'empty';
       empty.textContent = '创建或选择一个会话开始聊天';
       $('events').append(empty);
-      showNotice('已退出会话。');
+      showNotice(deleting ? '会话已删除。' : '已退出会话。');
     } catch (error) {
       showNotice(error.message, true);
     } finally {

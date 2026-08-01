@@ -157,6 +157,25 @@ func (a *API) RenameConversation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, event)
 }
 
+func (a *API) DeleteConversation(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	conversationID, err := uuid.Parse(mux.Vars(r)["id"])
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_conversation_id", "conversation id is invalid")
+		return
+	}
+	members, err := a.store.DeleteConversation(r.Context(), user.ID, conversationID)
+	if err != nil {
+		handleStoreError(w, r, err)
+		return
+	}
+	a.hub.Broadcast(conversationID, map[string]any{"type": "conversation.deleted", "conversation_id": conversationID})
+	for _, memberID := range members {
+		a.hub.RemoveUserConversation(memberID, conversationID)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (a *API) LeaveConversation(w http.ResponseWriter, r *http.Request) {
 	user, _ := currentUser(r.Context())
 	conversationID, err := uuid.Parse(mux.Vars(r)["id"])
@@ -193,6 +212,102 @@ func (a *API) RemoveMember(w http.ResponseWriter, r *http.Request) {
 	}
 	a.hub.Broadcast(conversationID, map[string]any{"type": "conversation.event", "event": event})
 	a.hub.RemoveUserConversation(targetID, conversationID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) UpdateMemberRole(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	conversationID, err := uuid.Parse(mux.Vars(r)["id"])
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_conversation_id", "conversation id is invalid")
+		return
+	}
+	targetID, err := uuid.Parse(mux.Vars(r)["userID"])
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_user_id", "user id is invalid")
+		return
+	}
+	var input struct {
+		Role string `json:"role"`
+	}
+	if err := decodeJSON(w, r, &input, 4<<10); err != nil {
+		return
+	}
+	member, event, err := a.store.UpdateMemberRole(r.Context(), user.ID, conversationID, targetID, input.Role)
+	if err != nil {
+		handleStoreError(w, r, err)
+		return
+	}
+	a.hub.Broadcast(conversationID, map[string]any{"type": "conversation.event", "event": event})
+	writeJSON(w, http.StatusOK, map[string]any{"member": addMemberAvatar(member), "event": event})
+}
+
+func (a *API) ListContacts(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	contacts, err := a.store.ListContacts(r.Context(), user.ID)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	if contacts == nil {
+		contacts = []Contact{}
+	}
+	for i := range contacts {
+		contacts[i].AvatarURL = gravatarURL(contacts[i].Email, defaultAvatarSize)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"contacts": contacts})
+}
+
+func (a *API) SaveContact(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	var input struct {
+		Name  string `json:"name"`
+		Email string `json:"email"`
+		Note  string `json:"note"`
+	}
+	if err := decodeJSON(w, r, &input, 16<<10); err != nil {
+		return
+	}
+	input.Name = strings.TrimSpace(input.Name)
+	input.Note = strings.TrimSpace(input.Note)
+	email, ok := normalizeEmail(input.Email)
+	if !ok || input.Name == "" || len([]rune(input.Name)) > 80 || len([]rune(input.Note)) > 1000 {
+		writeProblem(w, http.StatusBadRequest, "invalid_contact", "contact name or email is invalid")
+		return
+	}
+	contactID := uuid.New()
+	if raw := mux.Vars(r)["contactID"]; raw != "" {
+		var err error
+		contactID, err = uuid.Parse(raw)
+		if err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid_contact_id", "contact id is invalid")
+			return
+		}
+	}
+	contact, err := a.store.SaveContact(r.Context(), user.ID, contactID, input.Name, email, input.Note)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	contact.AvatarURL = gravatarURL(contact.Email, defaultAvatarSize)
+	status := http.StatusOK
+	if r.Method == http.MethodPost {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, contact)
+}
+
+func (a *API) DeleteContact(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	contactID, err := uuid.Parse(mux.Vars(r)["contactID"])
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_contact_id", "contact id is invalid")
+		return
+	}
+	if err := a.store.DeleteContact(r.Context(), user.ID, contactID); err != nil {
+		handleStoreError(w, r, err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
