@@ -83,10 +83,10 @@
     .conversation-button.active { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 28%, var(--line)); }
     .conversation-row { display: flex; justify-content: space-between; gap: 8px; }
     .unread { color: var(--accent); }
-    .chat { display: grid; min-width: 0; min-height: 0; grid-template-rows: auto auto 1fr auto; overflow: hidden; }
-    .chat-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 17px 20px; border-bottom: 1px solid var(--line); }
+    .chat { display: grid; min-width: 0; min-height: 0; grid-template-rows: auto auto minmax(0, 1fr) auto; overflow: hidden; }
+    .chat-head { display: flex; grid-row: 1; align-items: center; justify-content: space-between; gap: 14px; padding: 17px 20px; border-bottom: 1px solid var(--line); }
     .chat-head p { margin-top: 2px; }
-    #settings-panel { padding: 0 20px 20px; border-bottom: 1px solid var(--line); background: var(--bg); }
+    #settings-panel { grid-row: 2; padding: 0 20px 20px; border-bottom: 1px solid var(--line); background: var(--bg); }
     #settings-panel[hidden] { display: none; }
     .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding-top: 16px; }
     .settings-section { padding: 16px; background: var(--card); border: 1px solid var(--line); border-radius: 11px; }
@@ -104,7 +104,7 @@
     .member-meta { color: var(--muted); font-size: 13px; }
     .danger-zone { margin-top: 10px; padding: 12px; color: var(--danger); background: var(--danger-soft); border-radius: 9px; }
     .danger-zone[hidden] { display: none; }
-    #events { min-height: 0; overflow: auto; padding: 24px; display: flex; flex-direction: column; gap: 10px; }
+    #events { display: flex; grid-row: 3; min-height: 0; overflow: auto; padding: 24px; flex-direction: column; gap: 10px; }
     .message-row { display: flex; max-width: min(78%, 740px); align-items: flex-end; gap: 8px; }
     .message-row.mine { align-self: flex-end; flex-direction: row-reverse; }
     .message-body { min-width: 0; }
@@ -114,7 +114,7 @@
     .message-row.mine .message { color: #fff; background: var(--accent); border-color: var(--accent); }
     .system { align-self: center; color: var(--muted); font-size: 13px; }
     .empty { margin: auto; color: var(--muted); text-align: center; }
-    #composer { display: flex; min-height: 70px; max-height: 180px; align-items: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--line); }
+    #composer { display: flex; grid-row: 4; min-height: 70px; max-height: 180px; align-items: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--line); }
     #composer textarea { min-height: 42px; max-height: 140px; resize: none; overflow-y: auto; line-height: 1.45; }
     #composer button { min-height: 42px; margin: 0; }
     .page { height: 100%; min-height: 0; overflow: auto; padding: 24px; }
