@@ -65,15 +65,16 @@ type Contact struct {
 }
 
 type Event struct {
-	ConversationID uuid.UUID       `json:"conversation_id"`
-	Seq            int64           `json:"seq"`
-	ID             uuid.UUID       `json:"id"`
-	SenderID       *uuid.UUID      `json:"sender_id,omitempty"`
-	SenderEmail    string          `json:"sender_email,omitempty"`
-	SenderName     string          `json:"sender_name,omitempty"`
-	Type           string          `json:"type"`
-	Payload        json.RawMessage `json:"payload"`
-	CreatedAt      time.Time       `json:"created_at"`
+	ConversationID  uuid.UUID       `json:"conversation_id"`
+	Seq             int64           `json:"seq"`
+	ID              uuid.UUID       `json:"id"`
+	SenderID        *uuid.UUID      `json:"sender_id,omitempty"`
+	ClientMessageID *uuid.UUID      `json:"client_message_id,omitempty"`
+	SenderEmail     string          `json:"sender_email,omitempty"`
+	SenderName      string          `json:"sender_name,omitempty"`
+	Type            string          `json:"type"`
+	Payload         json.RawMessage `json:"payload"`
+	CreatedAt       time.Time       `json:"created_at"`
 }
 
 type LoginAttempt struct {

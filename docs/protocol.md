@@ -113,6 +113,7 @@ Every conversation owns a strictly increasing `seq`. Messages and metadata chang
   "seq":7,
   "id":"6426f043-14f0-4771-8522-acc9c4070908",
   "sender_id":"2ca91885-44af-4fac-a0ef-5ca45fd0e28e",
+  "client_message_id":"99780747-d253-494f-81ec-19e380defdd1",
   "sender_email":"alice@example.com",
   "sender_name":"Alice",
   "type":"message.created",
@@ -143,7 +144,7 @@ POST /api/conversations/{id}/messages
 {"client_message_id":"99780747-d253-494f-81ec-19e380defdd1","text":"hello"}
 ```
 
-Retrying the same `client_message_id` for the same sender and conversation returns the original stored event.
+Retrying the same `client_message_id` for the same sender and conversation returns the original stored event. History events also return `client_message_id`, allowing a client that lost the original HTTP response to merge the durable event into its optimistic message instead of creating a second bubble.
 
 ## WebSocket protocol version 1
 

@@ -836,7 +836,7 @@ func (s *Store) ListEvents(ctx context.Context, userID, conversationID uuid.UUID
 		upper = leftSeq.Int64
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT e.conversation_id,e.seq,e.id,e.sender_id,COALESCE(u.email,''),
+		SELECT e.conversation_id,e.seq,e.id,e.sender_id,e.client_event_id,COALESCE(u.email,''),
 			COALESCE(u.display_name,u.username,u.email,''),e.event_type,e.payload,e.created_at
 		FROM conversation_events e LEFT JOIN users u ON u.id=e.sender_id
 		WHERE conversation_id=$1 AND seq>$2 AND seq>=$3 AND seq<=$4
@@ -849,12 +849,16 @@ func (s *Store) ListEvents(ctx context.Context, userID, conversationID uuid.UUID
 	for rows.Next() {
 		var event Event
 		var senderID uuid.NullUUID
-		if err := rows.Scan(&event.ConversationID, &event.Seq, &event.ID, &senderID, &event.SenderEmail, &event.SenderName,
+		var clientMessageID uuid.NullUUID
+		if err := rows.Scan(&event.ConversationID, &event.Seq, &event.ID, &senderID, &clientMessageID, &event.SenderEmail, &event.SenderName,
 			&event.Type, &event.Payload, &event.CreatedAt); err != nil {
 			return nil, err
 		}
 		if senderID.Valid {
 			event.SenderID = &senderID.UUID
+		}
+		if clientMessageID.Valid {
+			event.ClientMessageID = &clientMessageID.UUID
 		}
 		events = append(events, event)
 	}
@@ -887,6 +891,7 @@ func (s *Store) AppendMessage(ctx context.Context, userID, conversationID, clien
 		&existing.ID, &senderID, &existing.Type, &existing.Payload, &existing.CreatedAt)
 	if err == nil {
 		existing.SenderID = &senderID.UUID
+		existing.ClientMessageID = &clientEventID
 		return existing, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -900,7 +905,7 @@ func (s *Store) AppendMessage(ctx context.Context, userID, conversationID, clien
 		return Event{}, err
 	}
 	payload, _ := json.Marshal(map[string]string{"text": text})
-	event := Event{ConversationID: conversationID, Seq: seq, ID: uuid.New(), SenderID: &userID, Type: "message.created", Payload: payload}
+	event := Event{ConversationID: conversationID, Seq: seq, ID: uuid.New(), SenderID: &userID, ClientMessageID: &clientEventID, Type: "message.created", Payload: payload}
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(email,''),COALESCE(display_name,username,email,'') FROM users WHERE id=$1`, userID).Scan(&event.SenderEmail, &event.SenderName); err != nil {
 		return Event{}, err
 	}

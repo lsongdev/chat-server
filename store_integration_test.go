@@ -72,14 +72,14 @@ func TestStoreConversationFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if duplicate.ID != message.ID || duplicate.Seq != message.Seq {
+	if duplicate.ID != message.ID || duplicate.Seq != message.Seq || duplicate.ClientMessageID == nil || *duplicate.ClientMessageID != clientMessageID {
 		t.Fatal("idempotent retry returned a different event")
 	}
 	events, err := store.ListEvents(ctx, member.ID, conversation.ID, 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 2 || events[0].Type != "member.joined" || events[1].Type != "message.created" {
+	if len(events) != 2 || events[0].Type != "member.joined" || events[1].Type != "message.created" || events[1].ClientMessageID == nil || *events[1].ClientMessageID != clientMessageID {
 		t.Fatalf("unexpected member-visible events: %#v", events)
 	}
 	if err := store.UpdateRead(ctx, member.ID, conversation.ID, message.Seq); err != nil {
