@@ -2,17 +2,18 @@
 
 状态：设计基线
 
-部署范围：单机、单个 Go 进程、单个 PostgreSQL 实例
+部署范围：单机、独立前端容器、单个 Go 后端进程、单个 PostgreSQL 实例
 
 身份来源：所有客户端均可使用姓名+邮箱；Web 可选用 `https://my.lsong.org` OIDC 获取邮箱
 
-更新时间：2026-08-01
+更新时间：2026-08-10
 
 ## 1. 结论
 
 V1 采用以下组合：
 
 - Go HTTP/WebSocket 服务；
+- React/Vite 前端独立构建，由 Nginx 容器提供静态文件和同源反向代理；
 - PostgreSQL 作为唯一持久化数据库；
 - 进程内 Hub 完成在线消息分发；
 - 所有客户端都可以通过姓名和规范化邮箱登录，Web 也可通过 OIDC Authorization Code Flow 获取同样的资料；
@@ -54,23 +55,30 @@ SQLite 在单机聊天服务中并非不可用，但本项目不采用它。原�
                                    |
                             Authorization Code
                                    |
-+-------------+        HTTPS / WebSocket       v
-| Web Client  | <----------------------> +-----+---------+
-| local cache |                          | Go Chat Server |
-+-------------+                          |               |
-                                         | HTTP API      |
-                                         | Auth/session  |
-                                         | In-memory Hub |
-                                         +-------+-------+
-                                                 |
-                                                 | SQL
-                                                 v
-                                         +-------+-------+
-                                         | PostgreSQL    |
-                                         +---------------+
++-------------+       HTTPS / WebSocket       +------------------+
+| Web Client  | <----------------------------> | Frontend Nginx   |
+| local cache |                                | React SPA        |
++-------------+                                +--------+---------+
+                                                        |
+                                      /api /auth /ws    | Compose network
+                                                        v
+                                               +--------+---------+
+                                               | Go Chat Backend  |
+                                               | HTTP API         |
+                                               | Auth/session     |
+                                               | In-memory Hub    |
+                                               +--------+---------+
+                                                        |
+                                                        | SQL
+                                                        v
+                                               +--------+---------+
+                                               | PostgreSQL       |
+                                               +------------------+
 ```
 
 PostgreSQL 是消息事实来源，WebSocket 只是低延迟通知通道。只有数据库事务提交成功后，服务器才能确认消息已经发送成功。
+
+前后端在源码、依赖、镜像和运行进程上完全分离。Go 后端不包含 `frontend/dist`，也不处理 `/chat`、`/contacts` 等浏览器路由。生产入口由前端 Nginx 统一暴露：静态路由采用 SPA fallback，协议路由转发给后端。这个边界允许两端独立构建和替换，同时保持单域名，避免为了跨站 Cookie 与 CORS 引入额外复杂度。
 
 单机版不需要 Redis：所有 WebSocket 都在同一个 Go 进程内，Hub 可以直接按会话广播。如果进程在数据库提交后、WebSocket 广播前崩溃，客户端重连时会按 `seq` 从 PostgreSQL 补齐消息。
 
@@ -550,7 +558,7 @@ TRUST_PROXY_HEADERS=false
 
 ## 13. 实现状态
 
-仓库已经实现 PostgreSQL migration、OIDC Discovery/PKCE 登录、本地 opaque session、统一会话、按完整邮件地址精确添加成员、邀请链接、成员生命周期、统一事件序列、幂等发送、进程内 Hub、WebSocket 有界队列、`after_seq` 补偿、已读游标、基础限速、Docker 镜像和 Compose 单机部署。
+仓库已经实现 PostgreSQL migration、OIDC Discovery/PKCE 登录、本地 opaque session、统一会话、按完整邮件地址精确添加成员、邀请链接、成员生命周期、统一事件序列、幂等发送、进程内 Hub、WebSocket 有界队列、`after_seq` 补偿、已读游标、基础限速、独立前后端 Docker 镜像和 Compose 单机部署。
 
 自动化验证覆盖纯单元测试、race detector、真实 PostgreSQL 17 的会话生命周期、模拟 OIDC Provider 的完整回调流程和真实 WebSocket 消息持久化/广播。发布生产环境前仍应在目标机器执行 10k 连接与混合写入压测、备份恢复演练和实际 `my.lsong.org` client 登录验收。
 

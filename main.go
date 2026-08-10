@@ -40,10 +40,6 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	web, err := NewStaticHandler()
-	if err != nil {
-		return err
-	}
 	hub := NewHub()
 	limiter := NewRateLimiter()
 	api := NewAPI(store, hub, cfg)
@@ -88,7 +84,9 @@ func run() error {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}).Methods(http.MethodGet)
-	router.PathPrefix("/").Handler(web)
+	// The backend intentionally does not serve the web application. In
+	// production the frontend container owns browser routes and proxies only
+	// /api, /auth, /ws and health checks to this service.
 
 	server := &http.Server{
 		Addr: cfg.HTTPAddr, Handler: securityHeaders(cfg, recoverer(requestLogger(router))),

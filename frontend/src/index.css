@@ -164,6 +164,42 @@ label { display: block; margin-bottom: 4px; font-weight: 650; }
 .invite-card #status.error { color: var(--danger); }
 
 @media (max-width: 800px) {
+  .app-shell {
+    height: 100dvh;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) calc(58px + env(safe-area-inset-bottom, 0px));
+  }
+  .workspace { grid-row: 1; padding: 10px; }
+  .module-nav {
+    grid-row: 2;
+    min-width: 0;
+    min-height: 0;
+    flex-direction: row;
+    justify-content: space-around;
+    gap: 4px;
+    padding: 5px max(10px, env(safe-area-inset-right, 0px)) calc(5px + env(safe-area-inset-bottom, 0px)) max(10px, env(safe-area-inset-left, 0px));
+    border-top: 1px solid var(--line);
+    border-right: 0;
+  }
+  .nav-logo, .nav-spacer, .nav-avatar { display: none; }
+  .module-button {
+    width: min(88px, 28vw);
+    height: 48px;
+    grid-template-rows: 23px 15px;
+    gap: 1px;
+    border-radius: 10px;
+  }
+  .module-button svg { width: 21px; height: 21px; }
+  .module-button::after {
+    position: static;
+    padding: 0;
+    color: currentColor;
+    background: transparent;
+    font-size: 11px;
+    line-height: 15px;
+    opacity: 1;
+    transform: none;
+  }
   .chat-module { display: block; }
   .chat-module.conversation-open .sidebar { display: none; }
   .chat-module.conversation-list .chat { display: none; }
@@ -174,9 +210,7 @@ label { display: block; margin-bottom: 4px; font-weight: 650; }
   .settings-section.wide { grid-column: auto; }
 }
 @media (max-width: 520px) {
-  .app-shell { grid-template-columns: 54px minmax(0, 1fr); }
   .workspace { padding: 8px; }
-  .module-nav { padding-inline: 6px; }
   .chat-head { padding: 12px; }
   .chat-head > div { min-width: 0; flex: 1; }
   .chat-head h2, .chat-head p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

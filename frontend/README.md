@@ -1,4 +1,29 @@
-# React + TypeScript + Vite
+# Flame Chat Web
+
+独立的 React + TypeScript + Vite 前端。它不依赖 Go 源码或后端构建产物。
+
+## 开发
+
+```sh
+npm ci
+npm run dev
+```
+
+Vite 默认把 `/api`、`/auth`、`/ws`、`/healthz` 和 `/readyz` 代理到 `http://localhost:8080`。可通过 `CHAT_BACKEND` 指向其他后端：
+
+```sh
+CHAT_BACKEND=http://127.0.0.1:9000 npm run dev
+```
+
+## 构建与镜像
+
+```sh
+npm run build
+npm run lint
+docker build -t flame-chat-frontend .
+```
+
+生产镜像使用 Nginx 提供 SPA，并把协议端点反向代理到 Compose 网络中的 `backend:8080`。前端和后端分别构建、分别运行，但对浏览器保持同源。
 
 ## Client routes
 
@@ -9,34 +34,3 @@
 - `/invite/{token}` — 邀请确认，未登录时保留当前路径完成登录回跳。
 
 Web 会过滤服务端返回的 `status: "left"` 会话；会话名称是必填字段。
-
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
-
-Currently, two official plugins are available:
-
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
-```
-
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.

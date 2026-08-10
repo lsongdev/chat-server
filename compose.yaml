@@ -14,7 +14,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
     restart: unless-stopped
 
-  chat:
+  backend:
     build: .
     environment:
       CHAT_BASE_URL: ${CHAT_BASE_URL:-http://localhost:8080}
@@ -32,10 +32,25 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    ports:
-      - "8080:8080"
+    expose:
+      - "8080"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
       interval: 5s
       timeout: 3s
       retries: 10

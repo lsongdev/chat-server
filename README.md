@@ -9,14 +9,15 @@
 ```
 chat-server/
 ├── main.go handlers.go auth.go hub.go store.go   # Go 后端：REST /api + WebSocket /ws + 鉴权
-├── web.go                                         # 托管构建后的 React 静态文件（SPA fallback）
-└── frontend/                                      # React + Vite 前端
+├── Dockerfile                                     # 仅构建 Go 后端镜像
+└── frontend/                                      # 独立 React + Vite 前端
+    ├── Dockerfile nginx.conf                      # 构建 SPA，并代理后端协议端点
     ├── src/App.tsx                                # 路由与登录门控
     ├── src/useChatClient.ts                       # 会话/消息状态机 + WebSocket 同步
     └── src/pages/ components/                     # 登录 / 聊天 / 邀请 / 联系人 / 设置
 ```
 
-前端只通过 `fetch /api/*` 和 `WebSocket /ws` 与后端通信，Cookie 由后端 HttpOnly 设置，生产环境同源部署、由 Go 直接托管。
+前端和后端拥有独立的依赖、构建流程与容器镜像。Go 不再嵌入或托管任何前端文件；前端 Nginx 提供 SPA fallback，并把 `/api`、`/auth`、`/ws`、`/healthz` 和 `/readyz` 代理到 Go 后端。浏览器仍只访问一个 Origin，因此 HttpOnly Cookie、OIDC 回调、CSRF Origin 校验和 WebSocket 都无需放宽到跨站模式。
 
 Web 路由为 `/chat`（会话列表）、`/chat/{conversationID}`（聊天）、`/contacts` 和 `/settings`。Web 只展示 `status=active` 的会话；离开会话的历史可继续由原生客户端按协议处理。会话名称在创建和重命名时均为必填。
 
@@ -54,7 +55,7 @@ cp .env.example .env
 cd frontend
 npm install
 npm run dev      # 开发服务器，Vite 将 /api、/auth、/ws 代理到 Go 后端
-npm run build    # 产物输出到 frontend/dist，由 Go 服务托管
+npm run build    # 产物输出到 frontend/dist
 npm run lint
 ```
 
@@ -66,27 +67,11 @@ npm run lint
 docker compose up --build
 ```
 
-打开 <http://localhost:8080>。镜像内先构建前端再构建 Go 二进制，应用启动时会在 PostgreSQL 中执行尚未应用的版本化 migration。
+打开 <http://localhost:8080>。Compose 分别构建 `frontend`、`backend` 镜像：只有前端容器暴露 8080，后端只在 Compose 内网监听 8080，PostgreSQL 不暴露端口。后端启动时会执行尚未应用的版本化 migration。
 
 ## 本地启动
 
-### 方式一：Go 托管（生产形态）
-
-先构建前端，再直接跑 Go：
-
-```sh
-cd frontend && npm ci && npm run build && cd ..
-set -a
-source .env
-set +a
-go run .
-```
-
-打开 <http://localhost:8080>。
-
-### 方式二：前后端分离开发
-
-后端：
+### 后端
 
 ```sh
 set -a
@@ -95,10 +80,13 @@ set +a
 go run .
 ```
 
-前端（Vite dev server + 代理）：
+后端只提供协议端点；直接访问根路径会返回 404。
+
+### 前端
 
 ```sh
 cd frontend
+npm ci
 npm run dev
 ```
 
