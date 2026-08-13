@@ -18,6 +18,7 @@ type Config struct {
 	OIDCClientID           string
 	OIDCClientSecret       string
 	OIDCRedirectURL        string
+	MobileAuthCallback     string
 	SessionTTL             time.Duration
 	AllowedOrigins         map[string]struct{}
 	CookieSecure           bool
@@ -67,6 +68,7 @@ func LoadConfig() (Config, error) {
 		OIDCClientID:           os.Getenv("OIDC_CLIENT_ID"),
 		OIDCClientSecret:       os.Getenv("OIDC_CLIENT_SECRET"),
 		OIDCRedirectURL:        env("OIDC_REDIRECT_URL", baseURL.ResolveReference(&url.URL{Path: "/auth/callback"}).String()),
+		MobileAuthCallback:     env("MOBILE_AUTH_CALLBACK", "flame://auth/callback"),
 		SessionTTL:             ttl,
 		AllowedOrigins:         origins,
 		CookieSecure:           baseURL.Scheme == "https",

@@ -36,8 +36,6 @@ export default function ChatModule({
   const [renameStatus, setRenameStatus] = useState({ message: '', error: false });
   const [memberEmail, setMemberEmail] = useState('');
   const [searchStatus, setSearchStatus] = useState({ message: '', error: false });
-  const [inviteURL, setInviteURL] = useState('');
-  const [inviteStatus, setInviteStatus] = useState({ message: '', error: false });
   const [leaveConfirm, setLeaveConfirm] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [message, setMessage] = useState('');
@@ -57,8 +55,6 @@ export default function ChatModule({
     setLeaveConfirm(false);
     setDeleteConfirm(false);
     setSearchStatus({ message: '', error: false });
-    setInviteURL('');
-    setInviteStatus({ message: '', error: false });
     setConfirmRemove(new Set());
   }, [selected]);
 
@@ -140,27 +136,6 @@ export default function ChatModule({
 	  setSearchStatus({ message: `已添加 ${email}`, error: false });
     } catch (error) {
 	  setSearchStatus({ message: (error as Error).message, error: true });
-    }
-  };
-
-  const generateInvite = async () => {
-    if (!selected) return;
-    setInviteStatus({ message: '正在生成…', error: false });
-    try {
-      const result = await chat.createInvite(selected);
-      setInviteURL(result.url);
-      setInviteStatus({ message: '邀请链接已生成。', error: false });
-    } catch (error) {
-      setInviteStatus({ message: (error as Error).message, error: true });
-    }
-  };
-
-  const copyInvite = async () => {
-    try {
-      await navigator.clipboard.writeText(inviteURL);
-      setInviteStatus({ message: '已复制到剪贴板。', error: false });
-    } catch {
-      setInviteStatus({ message: '请复制已选中的链接。', error: false });
     }
   };
 
@@ -355,22 +330,6 @@ export default function ChatModule({
                 </form>
                 <p id="rename-status" className={`status small${renameStatus.error ? ' error' : ''}`} role="status">
                   {renameStatus.message}
-                </p>
-              </section>
-              <section className="settings-section">
-                <h3>链接邀请</h3>
-                <p className="muted small">链接 24 小时内有效，只能使用一次。</p>
-                <div className="inline-form" style={{ marginTop: 10 }}>
-                  <input id="invite-url" readOnly placeholder="生成后显示邀请链接" aria-label="邀请链接" value={inviteURL} />
-                  <button id="invite" type="button" onClick={generateInvite} disabled={!canManage}>
-                    生成
-                  </button>
-                  <button id="copy" className="secondary" type="button" onClick={copyInvite} disabled={!inviteURL}>
-                    复制
-                  </button>
-                </div>
-                <p id="invite-status" className={`status small${inviteStatus.error ? ' error' : ''}`} role="status">
-                  {inviteStatus.message}
                 </p>
               </section>
               <section className="settings-section wide">

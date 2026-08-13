@@ -4,7 +4,7 @@ This is the wire contract shared by `chat-server`, Flame iOS, and the browser cl
 
 ## Session
 
-There is one authentication flow: `GET /auth/login` starts OIDC Authorization Code with PKCE, state, and nonce. The provider must return a verified email. The callback creates an opaque HttpOnly `chat_session` cookie and redirects to the validated `return_to` path. Clients never send provider tokens to chat APIs.
+Both clients use the same MyCenter OIDC identity. Browsers start at `GET /auth/login`; the callback creates an opaque HttpOnly `chat_session` cookie and redirects to the validated `return_to` path. iOS starts at `GET /auth/mobile/login` with an app PKCE challenge, receives a two-minute single-use code at the fixed `flame://auth/callback`, and exchanges it with the verifier at `POST /auth/mobile/token` for that same session cookie. The upstream OIDC exchange always uses Authorization Code with PKCE, state, and nonce, and requires a verified email. Clients never receive provider tokens.
 
 All `/api/*` and `/ws` requests use that cookie. Mutations include an allowed `Origin`. `POST /auth/logout` revokes the server session and expires the cookie. `GET /api/me` returns the signed-in user.
 
@@ -45,7 +45,6 @@ POST /api/conversations
 - `DELETE /api/conversations/{id}` permanently deletes it for every member and is owner-only.
 - `GET/POST /api/conversations/{id}/members` lists or adds members.
 - `PATCH/DELETE /api/conversations/{id}/members/{userID}` changes a role or removes a member.
-- `POST /api/conversations/{id}/invites` creates an invite; `POST /api/invites/{token}/accept` accepts it.
 
 ## Contacts
 

@@ -47,6 +47,8 @@ func run() error {
 
 	router := mux.NewRouter()
 	router.Handle("/auth/login", limiter.LoginMiddleware(cfg, http.HandlerFunc(auth.Login))).Methods(http.MethodGet)
+	router.Handle("/auth/mobile/login", limiter.LoginMiddleware(cfg, http.HandlerFunc(auth.MobileLogin))).Methods(http.MethodGet)
+	router.Handle("/auth/mobile/token", limiter.LoginMiddleware(cfg, http.HandlerFunc(auth.MobileToken))).Methods(http.MethodPost)
 	router.HandleFunc("/auth/callback", auth.Callback).Methods(http.MethodGet)
 	router.Handle("/auth/logout", auth.Required(auth.RequireSameOrigin(http.HandlerFunc(auth.Logout)))).Methods(http.MethodPost)
 
@@ -69,8 +71,6 @@ func run() error {
 	protected.HandleFunc("/conversations/{id}/events", api.ListEvents).Methods(http.MethodGet)
 	protected.HandleFunc("/conversations/{id}/messages", api.SendMessage).Methods(http.MethodPost)
 	protected.HandleFunc("/conversations/{id}/read", api.UpdateRead).Methods(http.MethodPost)
-	protected.HandleFunc("/conversations/{id}/invites", api.CreateInvite).Methods(http.MethodPost)
-	protected.HandleFunc("/invites/{token}/accept", api.AcceptInvite).Methods(http.MethodPost)
 	router.Handle("/ws", auth.Required(ws)).Methods(http.MethodGet)
 	router.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }).Methods(http.MethodGet)
 	router.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {

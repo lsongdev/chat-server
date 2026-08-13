@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from './api';
 import ChatPage from './pages/ChatPage';
-import InvitePage from './pages/InvitePage';
 import LoginPage from './pages/LoginPage';
 import type { User } from './types';
 
@@ -40,17 +39,11 @@ export default function App() {
     };
   }, []);
 
-  const inviteMatch = path.match(/^\/invite\/([^/]+)$/);
-  const token = inviteMatch ? inviteMatch[1] : null;
-
   if (user === undefined) {
     return <div className="page" />;
   }
   if (!user) {
-    return <LoginPage returnTo={token ? path : undefined} />;
-  }
-  if (token) {
-    return <InvitePage token={token} />;
+    return <LoginPage />;
   }
   return <ChatPage user={user} path={path} navigate={navigate} />;
 }

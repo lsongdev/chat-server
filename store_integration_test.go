@@ -7,7 +7,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 )
@@ -127,26 +126,8 @@ func TestStoreConversationFlow(t *testing.T) {
 	if err != nil || len(leftConversations) != 0 {
 		t.Fatalf("left conversation remained active: %#v %v", leftConversations, err)
 	}
-	third, err := store.UpsertOIDCUser(ctx, "https://issuer.example", OIDCClaims{Subject: "third-" + testID, Name: "Third", Email: "third-" + testID + "@example.com"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	secondInvite := uuid.NewString() + uuid.NewString()
-	if err := store.CreateInvite(ctx, member.ID, conversation.ID, secondInvite, time.Now().Add(time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := store.AcceptInvite(ctx, third.ID, secondInvite, 1000); err != nil {
-		t.Fatal(err)
-	}
-	removed, err := store.RemoveMember(ctx, member.ID, conversation.ID, third.ID)
-	if err != nil || removed.Type != "member.removed" {
-		t.Fatalf("remove failed: %#v %v", removed, err)
-	}
-	if _, err := store.ListEvents(ctx, third.ID, conversation.ID, 0, 100); !errors.Is(err, ErrForbidden) {
-		t.Fatalf("removed member retained access: %v", err)
-	}
 	deletedMembers, err := store.DeleteConversation(ctx, member.ID, conversation.ID)
-	if err != nil || len(deletedMembers) != 3 {
+	if err != nil || len(deletedMembers) != 2 {
 		t.Fatalf("conversation delete failed: %#v %v", deletedMembers, err)
 	}
 }

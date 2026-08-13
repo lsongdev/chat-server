@@ -20,7 +20,6 @@ import (
 var (
 	ErrNotFound        = errors.New("not found")
 	ErrForbidden       = errors.New("forbidden")
-	ErrInviteExpired   = errors.New("invite expired or exhausted")
 	ErrAmbiguousEmail  = errors.New("ambiguous email")
 	ErrAlreadyMember   = errors.New("already a member")
 	ErrMemberLimit     = errors.New("member limit reached")
@@ -57,12 +56,15 @@ func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 func (s *Store) CleanupExpired(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `
 		WITH deleted_attempts AS (
-			DELETE FROM oidc_login_attempts WHERE expires_at <= now()
+			DELETE FROM oidc_login_attempts WHERE expires_at <= now() RETURNING 1
+		), deleted_mobile_codes AS (
+			DELETE FROM mobile_login_codes WHERE expires_at <= now() RETURNING 1
 		), deleted_sessions AS (
-			DELETE FROM auth_sessions WHERE expires_at <= now()
+			DELETE FROM auth_sessions WHERE expires_at <= now() RETURNING 1
 		)
-		DELETE FROM conversation_invites
-		WHERE expires_at <= now() OR revoked_at IS NOT NULL`)
+		SELECT (SELECT count(*) FROM deleted_attempts)
+			+ (SELECT count(*) FROM deleted_mobile_codes)
+			+ (SELECT count(*) FROM deleted_sessions)`)
 	return err
 }
 
@@ -116,8 +118,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 func (s *Store) SaveLoginAttempt(ctx context.Context, state string, attempt LoginAttempt, expiresAt time.Time) error {
 	hash := sha256.Sum256([]byte(state))
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO oidc_login_attempts(state_hash, nonce, code_verifier, return_to, expires_at)
-		VALUES($1,$2,$3,$4,$5)`, hash[:], attempt.Nonce, attempt.CodeVerifier, attempt.ReturnTo, expiresAt)
+		INSERT INTO oidc_login_attempts(state_hash, nonce, code_verifier, return_to, mobile_challenge, expires_at)
+		VALUES($1,$2,$3,$4,NULLIF($5,''),$6)`, hash[:], attempt.Nonce, attempt.CodeVerifier,
+		attempt.ReturnTo, attempt.MobileChallenge, expiresAt)
 	return err
 }
 
@@ -127,11 +130,48 @@ func (s *Store) ConsumeLoginAttempt(ctx context.Context, state string) (LoginAtt
 	err := s.db.QueryRowContext(ctx, `
 		DELETE FROM oidc_login_attempts
 		WHERE state_hash=$1 AND expires_at > now()
-		RETURNING nonce, code_verifier, return_to`, hash[:]).Scan(&attempt.Nonce, &attempt.CodeVerifier, &attempt.ReturnTo)
+		RETURNING nonce, code_verifier, return_to, COALESCE(mobile_challenge,'')`, hash[:]).Scan(
+		&attempt.Nonce, &attempt.CodeVerifier, &attempt.ReturnTo, &attempt.MobileChallenge)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LoginAttempt{}, ErrNotFound
 	}
 	return attempt, err
+}
+
+func (s *Store) CreateMobileLoginCode(ctx context.Context, userID uuid.UUID, rawCode, challenge string, expiresAt time.Time) error {
+	hash := sha256.Sum256([]byte(rawCode))
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO mobile_login_codes(code_hash,user_id,code_challenge,expires_at)
+		VALUES($1,$2,$3,$4)`, hash[:], userID, challenge, expiresAt)
+	return err
+}
+
+func (s *Store) ConsumeMobileLoginCode(ctx context.Context, rawCode string) (uuid.UUID, string, error) {
+	hash := sha256.Sum256([]byte(rawCode))
+	var userID uuid.UUID
+	var challenge string
+	err := s.db.QueryRowContext(ctx, `
+		DELETE FROM mobile_login_codes
+		WHERE code_hash=$1 AND expires_at>now()
+		RETURNING user_id,code_challenge`, hash[:]).Scan(&userID, &challenge)
+	if errors.Is(err, sql.ErrNoRows) {
+		return uuid.Nil, "", ErrNotFound
+	}
+	return userID, challenge, err
+}
+
+func (s *Store) UserByID(ctx context.Context, userID uuid.UUID) (User, error) {
+	var user User
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id,oidc_subject,COALESCE(username,''),COALESCE(display_name,''),
+			COALESCE(email,''),email_verified,COALESCE(picture_url,''),status
+		FROM users WHERE id=$1 AND status='active'`, userID).Scan(
+		&user.ID, &user.Subject, &user.Username, &user.DisplayName, &user.Email,
+		&user.EmailVerified, &user.PictureURL, &user.Status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, ErrNotFound
+	}
+	return user, err
 }
 
 func (s *Store) UpsertOIDCUser(ctx context.Context, issuer string, claims OIDCClaims) (User, error) {
@@ -288,11 +328,6 @@ func (s *Store) CreateConversation(ctx context.Context, creator, conversationID 
 		VALUES($1,$2,'owner',1,1)`, conversation.ID, creator); err != nil {
 		return Conversation{}, Event{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO conversation_member_periods(id,conversation_id,user_id,joined_seq)
-		VALUES($1,$2,$3,1)`, uuid.New(), conversation.ID, creator); err != nil {
-		return Conversation{}, Event{}, err
-	}
 	payload, _ := json.Marshal(map[string]any{"title": title, "created_by": creator})
 	event := Event{ConversationID: conversation.ID, Seq: 1, ID: uuid.New(), SenderID: &creator, Type: "conversation.created", Payload: payload}
 	if err := insertEvent(ctx, tx, &event, nil); err != nil {
@@ -435,11 +470,6 @@ func (s *Store) AddMemberByEmail(ctx context.Context, actorID, conversationID uu
 		ON CONFLICT (conversation_id,user_id) DO UPDATE SET
 			role='member',joined_seq=EXCLUDED.joined_seq,last_read_seq=EXCLUDED.last_read_seq,
 			status='active',left_seq=NULL,joined_at=now(),updated_at=now()`, conversationID, member.UserID, seq); err != nil {
-		return Member{}, Event{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO conversation_member_periods(id,conversation_id,user_id,joined_seq)
-		VALUES($1,$2,$3,$4)`, uuid.New(), conversationID, member.UserID, seq); err != nil {
 		return Member{}, Event{}, err
 	}
 	member.Role, member.Status, member.JoinedSeq = "member", "active", seq
@@ -685,10 +715,6 @@ func (s *Store) LeaveConversation(ctx context.Context, userID, conversationID uu
 	if _, err := tx.ExecContext(ctx, `UPDATE conversation_members SET status='left',left_seq=$3,updated_at=now() WHERE conversation_id=$1 AND user_id=$2`, conversationID, userID, seq); err != nil {
 		return Event{}, nil, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE conversation_member_periods SET left_seq=$3,left_at=now(),leave_reason='left'
-		WHERE conversation_id=$1 AND user_id=$2 AND left_seq IS NULL`, conversationID, userID, seq); err != nil {
-		return Event{}, nil, err
-	}
 	payload, _ := json.Marshal(map[string]any{"user_id": userID, "new_owner_id": newOwner})
 	event := Event{ConversationID: conversationID, Seq: seq, ID: uuid.New(), SenderID: &userID, Type: "member.left", Payload: payload}
 	if err := insertEvent(ctx, tx, &event, nil); err != nil {
@@ -731,10 +757,6 @@ func (s *Store) RemoveMember(ctx context.Context, actorID, conversationID, targe
 		return Event{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE conversation_members SET status='removed',left_seq=$3,updated_at=now() WHERE conversation_id=$1 AND user_id=$2`, conversationID, targetID, seq); err != nil {
-		return Event{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE conversation_member_periods SET left_seq=$3,left_at=now(),leave_reason='removed'
-		WHERE conversation_id=$1 AND user_id=$2 AND left_seq IS NULL`, conversationID, targetID, seq); err != nil {
 		return Event{}, err
 	}
 	payload, _ := json.Marshal(map[string]any{"user_id": targetID, "removed_by": actorID})
@@ -901,102 +923,4 @@ func (s *Store) UpdateRead(ctx context.Context, userID, conversationID uuid.UUID
 		return ErrInvalidSequence
 	}
 	return nil
-}
-
-func (s *Store) CreateInvite(ctx context.Context, userID, conversationID uuid.UUID, rawToken string, expiresAt time.Time) error {
-	hash := sha256.Sum256([]byte(rawToken))
-	var allowed bool
-	if err := s.db.QueryRowContext(ctx, `
-		SELECT role IN ('owner','admin') AND status='active'
-		FROM conversation_members WHERE conversation_id=$1 AND user_id=$2`, conversationID, userID).Scan(&allowed); errors.Is(err, sql.ErrNoRows) || !allowed {
-		return ErrForbidden
-	} else if err != nil {
-		return err
-	}
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO conversation_invites(id,conversation_id,token_hash,created_by,expires_at)
-		VALUES($1,$2,$3,$4,$5)`, uuid.New(), conversationID, hash[:], userID, expiresAt)
-	return err
-}
-
-func (s *Store) AcceptInvite(ctx context.Context, userID uuid.UUID, rawToken string, maxMembers int) (uuid.UUID, Event, error) {
-	hash := sha256.Sum256([]byte(rawToken))
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return uuid.Nil, Event{}, err
-	}
-	defer tx.Rollback()
-
-	var conversationID uuid.UUID
-	err = tx.QueryRowContext(ctx, `
-		UPDATE conversation_invites SET use_count=use_count+1
-		WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at>now() AND use_count<max_uses
-		RETURNING conversation_id`, hash[:]).Scan(&conversationID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return uuid.Nil, Event{}, ErrInviteExpired
-	}
-	if err != nil {
-		return uuid.Nil, Event{}, err
-	}
-
-	var lockedID uuid.UUID
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM conversations WHERE id=$1 FOR UPDATE`, conversationID).Scan(&lockedID); err != nil {
-		return uuid.Nil, Event{}, err
-	}
-	rows, err := tx.QueryContext(ctx, `SELECT user_id::text FROM conversation_members WHERE conversation_id=$1 AND status='active' ORDER BY user_id::text`, conversationID)
-	if err != nil {
-		return uuid.Nil, Event{}, err
-	}
-	var activeMemberIDs []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return uuid.Nil, Event{}, err
-		}
-		activeMemberIDs = append(activeMemberIDs, id)
-	}
-	rows.Close()
-	if len(activeMemberIDs) >= maxMembers {
-		return uuid.Nil, Event{}, ErrMemberLimit
-	}
-	var seq int64
-	if err := tx.QueryRowContext(ctx, `
-		UPDATE conversations SET last_seq=last_seq+1,updated_at=now()
-		WHERE id=$1 RETURNING last_seq`, conversationID).Scan(&seq); err != nil {
-		return uuid.Nil, Event{}, err
-	}
-	memberRole := "member"
-	if len(activeMemberIDs) == 0 {
-		memberRole = "owner"
-	}
-
-	result, err := tx.ExecContext(ctx, `
-		INSERT INTO conversation_members(conversation_id,user_id,role,joined_seq,last_read_seq,status,left_seq)
-		VALUES($1,$2,$4,$3,$3,'active',NULL)
-		ON CONFLICT (conversation_id,user_id) DO UPDATE SET
-			role=EXCLUDED.role,joined_seq=EXCLUDED.joined_seq,last_read_seq=EXCLUDED.last_read_seq,
-			status='active',left_seq=NULL,joined_at=now(),updated_at=now()
-		WHERE conversation_members.status<>'active'`, conversationID, userID, seq, memberRole)
-	if err != nil {
-		return uuid.Nil, Event{}, err
-	}
-	affected, _ := result.RowsAffected()
-	if affected == 0 {
-		return uuid.Nil, Event{}, ErrForbidden
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO conversation_member_periods(id,conversation_id,user_id,joined_seq)
-		VALUES($1,$2,$3,$4)`, uuid.New(), conversationID, userID, seq); err != nil {
-		return uuid.Nil, Event{}, err
-	}
-	payload, _ := json.Marshal(map[string]any{"user_id": userID, "role": memberRole})
-	event := Event{ConversationID: conversationID, Seq: seq, ID: uuid.New(), SenderID: &userID, Type: "member.joined", Payload: payload}
-	if err := insertEvent(ctx, tx, &event, nil); err != nil {
-		return uuid.Nil, Event{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return uuid.Nil, Event{}, err
-	}
-	return conversationID, event, nil
 }

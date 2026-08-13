@@ -46,7 +46,6 @@ Go 服务不托管前端静态文件。开发入口由 Vite 提供 React SPA，�
 - `conversation_members`：成员角色、加入/离开游标和已读游标。
 - `conversation_events`：消息及元数据事件。
 - `contacts`：当前账户的服务端同步联系人。
-- `conversation_invites`：短期、限次邀请。
 
 每个 conversation 的事件序号严格递增。消息、改名和成员变化共享序号，因此 `last_seq` 只代表同步游标。未读消息数由服务端仅统计 `message.created`，不通过游标相减推断。
 

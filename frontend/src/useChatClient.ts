@@ -409,13 +409,6 @@ export function useChatClient() {
     [refreshConversations],
   );
 
-  const createInvite = useCallback(async (conversation: Conversation) => {
-    return api<{ url: string; expires_at: string }>(`/api/conversations/${conversation.id}/invites`, {
-      method: 'POST',
-      body: '{}',
-    });
-  }, []);
-
   const logout = useCallback(async () => {
     await api('/auth/logout', { method: 'POST', body: '{}' });
     if (cacheRef.current) cacheRef.current.close();
@@ -454,7 +447,6 @@ export function useChatClient() {
     updateMemberRole,
     leaveConversation,
     deleteConversation,
-    createInvite,
     logout,
   };
 }

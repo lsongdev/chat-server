@@ -1,15 +1,12 @@
-CREATE TABLE IF NOT EXISTS schema_migrations (
-    version text PRIMARY KEY,
-    applied_at timestamptz NOT NULL DEFAULT now()
-);
+-- Final core schema.
 
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id uuid PRIMARY KEY,
     oidc_issuer text NOT NULL,
     oidc_subject text NOT NULL,
     username text,
     display_name text,
-    email text,
+    email text NOT NULL,
     email_verified boolean NOT NULL DEFAULT false,
     picture_url text,
     status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'blocked')),
@@ -19,7 +16,9 @@ CREATE TABLE users (
     UNIQUE (oidc_issuer, oidc_subject)
 );
 
-CREATE TABLE auth_sessions (
+CREATE UNIQUE INDEX IF NOT EXISTS users_email_identity_idx ON users ((lower(email)));
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
     id uuid PRIMARY KEY,
     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     token_hash bytea NOT NULL UNIQUE,
@@ -29,18 +28,27 @@ CREATE TABLE auth_sessions (
     user_agent text,
     ip inet
 );
-CREATE INDEX auth_sessions_expiry_idx ON auth_sessions (expires_at);
+CREATE INDEX IF NOT EXISTS auth_sessions_expiry_idx ON auth_sessions (expires_at);
 
-CREATE TABLE oidc_login_attempts (
+CREATE TABLE IF NOT EXISTS oidc_login_attempts (
     state_hash bytea PRIMARY KEY,
     nonce text NOT NULL,
     code_verifier text NOT NULL,
     return_to text NOT NULL DEFAULT '/',
+    mobile_challenge text,
     expires_at timestamptz NOT NULL
 );
-CREATE INDEX oidc_login_attempts_expiry_idx ON oidc_login_attempts (expires_at);
+CREATE INDEX IF NOT EXISTS oidc_login_attempts_expiry_idx ON oidc_login_attempts (expires_at);
 
-CREATE TABLE conversations (
+CREATE TABLE IF NOT EXISTS mobile_login_codes (
+    code_hash bytea PRIMARY KEY,
+    user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    code_challenge text NOT NULL,
+    expires_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS mobile_login_codes_expiry_idx ON mobile_login_codes (expires_at);
+
+CREATE TABLE IF NOT EXISTS conversations (
     id uuid PRIMARY KEY,
     title text,
     created_by uuid NOT NULL REFERENCES users(id),
@@ -48,8 +56,7 @@ CREATE TABLE conversations (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
-
-CREATE TABLE conversation_members (
+CREATE TABLE IF NOT EXISTS conversation_members (
     conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     role text NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'member')),
@@ -61,23 +68,10 @@ CREATE TABLE conversation_members (
     updated_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (conversation_id, user_id)
 );
-CREATE INDEX conversation_members_user_idx
+CREATE INDEX IF NOT EXISTS conversation_members_user_idx
     ON conversation_members (user_id, conversation_id);
 
-CREATE TABLE conversation_member_periods (
-    id uuid PRIMARY KEY,
-    conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-    user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    joined_seq bigint NOT NULL,
-    left_seq bigint,
-    joined_at timestamptz NOT NULL DEFAULT now(),
-    left_at timestamptz,
-    leave_reason text CHECK (leave_reason IN ('left', 'removed'))
-);
-CREATE INDEX conversation_member_periods_lookup_idx
-    ON conversation_member_periods (conversation_id, user_id, joined_seq);
-
-CREATE TABLE conversation_events (
+CREATE TABLE IF NOT EXISTS conversation_events (
     conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     seq bigint NOT NULL,
     id uuid NOT NULL UNIQUE,
@@ -88,21 +82,23 @@ CREATE TABLE conversation_events (
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (conversation_id, seq)
 );
-CREATE UNIQUE INDEX conversation_events_idempotency_idx
+CREATE UNIQUE INDEX IF NOT EXISTS conversation_events_idempotency_idx
     ON conversation_events (conversation_id, sender_id, client_event_id)
     WHERE client_event_id IS NOT NULL;
-CREATE INDEX conversation_events_sender_idx
+CREATE INDEX IF NOT EXISTS conversation_events_sender_idx
     ON conversation_events (sender_id, created_at DESC);
 
-CREATE TABLE conversation_invites (
+CREATE TABLE IF NOT EXISTS contacts (
     id uuid PRIMARY KEY,
-    conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-    token_hash bytea NOT NULL UNIQUE,
-    created_by uuid NOT NULL REFERENCES users(id),
-    max_uses integer NOT NULL DEFAULT 1 CHECK (max_uses > 0),
-    use_count integer NOT NULL DEFAULT 0 CHECK (use_count >= 0),
-    expires_at timestamptz NOT NULL,
-    revoked_at timestamptz,
-    created_at timestamptz NOT NULL DEFAULT now()
+    owner_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name text NOT NULL,
+    email text NOT NULL,
+    note text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (owner_id, email)
 );
-CREATE INDEX conversation_invites_expiry_idx ON conversation_invites (expires_at);
+CREATE INDEX IF NOT EXISTS contacts_owner_idx ON contacts (owner_id, lower(name), lower(email));
+
+DROP TABLE IF EXISTS conversation_member_periods;
+DROP TABLE IF EXISTS conversation_invites;

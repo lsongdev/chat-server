@@ -5,10 +5,14 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,7 +88,7 @@ func TestOIDCLoginFlow(t *testing.T) {
 	baseURL, _ := url.Parse("http://chat.example")
 	cfg := Config{
 		BaseURL: baseURL, OIDCIssuer: issuer, OIDCClientID: "test-client", OIDCClientSecret: "test-secret",
-		OIDCRedirectURL: "http://chat.example/auth/callback", SessionTTL: time.Hour,
+		OIDCRedirectURL: "http://chat.example/auth/callback", MobileAuthCallback: "flame://auth/callback", SessionTTL: time.Hour,
 		AllowedOrigins: map[string]struct{}{"http://chat.example": {}},
 	}
 	auth, err := NewAuth(ctx, store, cfg)
@@ -125,5 +129,71 @@ func TestOIDCLoginFlow(t *testing.T) {
 	user, err := store.UserBySession(ctx, sessionValue)
 	if err != nil || user.Subject != "oidc-user" || user.Email != "oidc@example.com" {
 		t.Fatalf("session user mismatch: %#v %v", user, err)
+	}
+
+	verifier := strings.Repeat("a", 43)
+	digest := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(digest[:])
+	mobileLoginResponse := httptest.NewRecorder()
+	auth.MobileLogin(mobileLoginResponse, httptest.NewRequest(
+		http.MethodGet, "http://chat.example/auth/mobile/login?code_challenge="+challenge, nil))
+	if mobileLoginResponse.Code != http.StatusFound {
+		t.Fatalf("mobile login returned %d: %s", mobileLoginResponse.Code, mobileLoginResponse.Body.String())
+	}
+	mobileAuthorizeURL, err := url.Parse(mobileLoginResponse.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginNonce = mobileAuthorizeURL.Query().Get("nonce")
+	mobileCallbackResponse := httptest.NewRecorder()
+	auth.Callback(mobileCallbackResponse, httptest.NewRequest(
+		http.MethodGet,
+		"http://chat.example/auth/callback?code=valid-code&state="+url.QueryEscape(mobileAuthorizeURL.Query().Get("state")),
+		nil,
+	))
+	if mobileCallbackResponse.Code != http.StatusOK || mobileCallbackResponse.Header().Get("Location") != "" {
+		t.Fatalf("mobile callback did not end the OIDC redirect chain: status=%d location=%q",
+			mobileCallbackResponse.Code, mobileCallbackResponse.Header().Get("Location"))
+	}
+	mobileCallbackBody := mobileCallbackResponse.Body.String()
+	start := strings.Index(mobileCallbackBody, "flame://auth/callback?code=")
+	if start < 0 {
+		t.Fatalf("mobile callback does not contain the app handoff: %s", mobileCallbackBody)
+	}
+	end := strings.IndexAny(mobileCallbackBody[start:], "\"<")
+	if end < 0 {
+		t.Fatalf("mobile callback target is malformed: %s", mobileCallbackBody)
+	}
+	callbackURL, err := url.Parse(html.UnescapeString(mobileCallbackBody[start : start+end]))
+	if err != nil || callbackURL.Scheme != "flame" || callbackURL.Query().Get("code") == "" {
+		t.Fatalf("invalid mobile callback: %q %v", callbackURL, err)
+	}
+	mobileTokenResponse := httptest.NewRecorder()
+	auth.MobileToken(mobileTokenResponse, httptest.NewRequest(
+		http.MethodPost, "http://chat.example/auth/mobile/token",
+		strings.NewReader(`{"code":"`+callbackURL.Query().Get("code")+`","code_verifier":"`+verifier+`"}`),
+	))
+	if mobileTokenResponse.Code != http.StatusOK {
+		t.Fatalf("mobile token returned %d: %s", mobileTokenResponse.Code, mobileTokenResponse.Body.String())
+	}
+	if len(mobileTokenResponse.Result().Cookies()) == 0 {
+		t.Fatal("mobile token exchange did not create a session cookie")
+	}
+}
+
+func TestMobileHandoffEndsHTTPRedirectChain(t *testing.T) {
+	response := httptest.NewRecorder()
+	new(Auth).writeMobileHandoff(response, `flame://auth/callback?code=test-code`)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("handoff returned %d", response.Code)
+	}
+	if location := response.Header().Get("Location"); location != "" {
+		t.Fatalf("handoff continued the HTTP redirect chain to %q", location)
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, `window.location.replace("flame://auth/callback?code=test-code")`) ||
+		!strings.Contains(body, `href="flame://auth/callback?code=test-code"`) {
+		t.Fatalf("handoff page is missing its automatic or manual app link: %s", body)
 	}
 }

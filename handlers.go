@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -371,46 +370,6 @@ func (a *API) UpdateRead(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (a *API) CreateInvite(w http.ResponseWriter, r *http.Request) {
-	user, _ := currentUser(r.Context())
-	conversationID, err := uuid.Parse(mux.Vars(r)["id"])
-	if err != nil {
-		writeProblem(w, http.StatusBadRequest, "invalid_conversation_id", "conversation id is invalid")
-		return
-	}
-	token, err := randomToken(32)
-	if err != nil {
-		serverError(w, r, err)
-		return
-	}
-	expiresAt := time.Now().Add(24 * time.Hour)
-	if err := a.store.CreateInvite(r.Context(), user.ID, conversationID, token, expiresAt); err != nil {
-		handleStoreError(w, r, err)
-		return
-	}
-	inviteURL := a.config.BaseURL.ResolveReference(&url.URL{Path: "/invite/" + token}).String()
-	writeJSON(w, http.StatusCreated, map[string]any{"url": inviteURL, "expires_at": expiresAt})
-}
-
-func (a *API) AcceptInvite(w http.ResponseWriter, r *http.Request) {
-	user, _ := currentUser(r.Context())
-	token := mux.Vars(r)["token"]
-	if len(token) < 32 || len(token) > 128 {
-		writeProblem(w, http.StatusBadRequest, "invalid_invite", "invite token is invalid")
-		return
-	}
-	conversationID, event, err := a.store.AcceptInvite(r.Context(), user.ID, token, a.config.MaxConversationMembers)
-	if err != nil {
-		handleStoreError(w, r, err)
-		return
-	}
-	a.hub.AddUserConversation(user.ID, conversationID)
-	if event.ID != uuid.Nil {
-		a.hub.BroadcastChanged(conversationID, event.Seq)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"conversation_id": conversationID})
-}
-
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
@@ -464,8 +423,6 @@ func handleStoreError(w http.ResponseWriter, r *http.Request, err error) {
 		writeProblem(w, http.StatusForbidden, "forbidden", "你没有执行此操作的权限")
 	case errors.Is(err, ErrNotFound):
 		writeProblem(w, http.StatusNotFound, "not_found", "未找到对应用户或资源")
-	case errors.Is(err, ErrInviteExpired):
-		writeProblem(w, http.StatusGone, "invite_unavailable", "邀请链接已过期或已经使用")
 	case errors.Is(err, ErrAmbiguousEmail):
 		writeProblem(w, http.StatusConflict, "ambiguous_email", "该邮件地址对应多个用户，暂时无法添加")
 	case errors.Is(err, ErrAlreadyMember):

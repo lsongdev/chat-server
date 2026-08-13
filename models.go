@@ -69,9 +69,10 @@ type Event struct {
 }
 
 type LoginAttempt struct {
-	Nonce        string
-	CodeVerifier string
-	ReturnTo     string
+	Nonce           string
+	CodeVerifier    string
+	ReturnTo        string
+	MobileChallenge string
 }
 
 type OIDCClaims struct {

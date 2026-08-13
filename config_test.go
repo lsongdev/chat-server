@@ -27,7 +27,7 @@ func TestLoadConfig(t *testing.T) {
 func TestSafeReturnTo(t *testing.T) {
 	tests := map[string]string{
 		"":                         "/",
-		"/invite/token?from=email": "/invite/token?from=email",
+		"/chat/conversation-id?from=email": "/chat/conversation-id?from=email",
 		"https://evil.example/":    "/",
 		"//evil.example/path":      "/",
 		"relative":                 "/",
