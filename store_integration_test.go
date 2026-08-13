@@ -62,11 +62,11 @@ func TestStoreConversationFlow(t *testing.T) {
 
 	clientMessageID := uuid.New()
 	content := json.RawMessage(`{"type":"text","text":"hello"}`)
-	message, err := store.AppendMessage(ctx, creator.ID, conversation.ID, clientMessageID, content)
+	message, err := store.AppendDeliveryEvent(ctx, creator.ID, conversation.ID, clientMessageID, "message.created", content)
 	if err != nil {
 		t.Fatal(err)
 	}
-	duplicate, err := store.AppendMessage(ctx, creator.ID, conversation.ID, clientMessageID, content)
+	duplicate, err := store.AppendDeliveryEvent(ctx, creator.ID, conversation.ID, clientMessageID, "message.created", content)
 	if err != nil {
 		t.Fatal(err)
 	}

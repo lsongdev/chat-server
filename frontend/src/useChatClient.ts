@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 import { APIError, api } from './api';
-import type { Contact, Conversation, Event, Member, ServerMessage, User } from './types';
+import { RealtimeClient, type DeliveryEvent } from './realtime';
+import type { Contact, Conversation, Event, Member, User } from './types';
 
 type EventsMap = Record<string, Record<string, Event>>;
+
+interface CachedPublish {
+  id: string;
+  room_id: string;
+  name: string;
+  profile: 'durable';
+  data: Record<string, unknown>;
+}
 
 export interface Notice {
   message: string;
@@ -107,12 +116,46 @@ export function contiguousSeq(conversation: Conversation, bucket: Record<string,
 
 function openCache(dbName: string): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(dbName, 1);
+    const request = indexedDB.open(dbName, 2);
     request.onupgradeneeded = () => {
-      const store = request.result.createObjectStore('events', { keyPath: 'key' });
-      store.createIndex('conversation', 'cache_conversation');
+      if (!request.result.objectStoreNames.contains('events')) {
+        const store = request.result.createObjectStore('events', { keyPath: 'key' });
+        store.createIndex('conversation', 'cache_conversation');
+      }
+      if (!request.result.objectStoreNames.contains('outbox')) {
+        request.result.createObjectStore('outbox', { keyPath: 'id' });
+      }
     };
     request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function saveCachedPublish(cache: IDBDatabase | null, publish: CachedPublish): Promise<void> {
+  if (!cache) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const transaction = cache.transaction('outbox', 'readwrite');
+    transaction.objectStore('outbox').put(publish);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
+function deleteCachedPublish(cache: IDBDatabase | null, id: string): Promise<void> {
+  if (!cache) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const transaction = cache.transaction('outbox', 'readwrite');
+    transaction.objectStore('outbox').delete(id);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
+function loadCachedPublishes(cache: IDBDatabase | null): Promise<CachedPublish[]> {
+  if (!cache) return Promise.resolve([]);
+  return new Promise((resolve, reject) => {
+    const request = cache.transaction('outbox').objectStore('outbox').getAll();
+    request.onsuccess = () => resolve(request.result as CachedPublish[]);
     request.onerror = () => reject(request.error);
   });
 }
@@ -159,8 +202,8 @@ function deleteCachedEvents(cache: IDBDatabase | null, conversationID: string): 
 export function useChatClient() {
   const [state, dispatch] = useReducer(reducer, initialState);
   const stateRef = useRef(state);
-  const socketRef = useRef<WebSocket | null>(null);
-  const reconnectRef = useRef(500);
+  const realtimeRef = useRef<RealtimeClient | null>(null);
+  const outboxReplayStartedRef = useRef(false);
   const cacheRef = useRef<IDBDatabase | null>(null);
   const readTimersRef = useRef(new Map<string, number>());
   const stateDispatch = useCallback((action: Action) => dispatch(action), []);
@@ -254,14 +297,18 @@ export function useChatClient() {
     const conversation = current.selected;
     if (!text || !conversation) return false;
     const clientMessageID = crypto.randomUUID();
-    const item = await retryNetwork(() =>
-      api<Event>(`/api/conversations/${conversation.id}/messages`, {
-        method: 'POST',
-        body: JSON.stringify({ client_message_id: clientMessageID, content: { type: 'text', text } }),
-      }),
-    );
-    dispatch({ type: 'events', conversation_id: conversation.id, events: [item] });
-    await cacheEvents(cacheRef.current, [item]);
+    const realtime = realtimeRef.current;
+    if (!realtime) throw new Error('实时连接尚未初始化');
+    const publish: CachedPublish = {
+      id: clientMessageID,
+      room_id: conversation.id,
+      name: 'message.created',
+      profile: 'durable',
+      data: { type: 'text', text },
+    };
+    await saveCachedPublish(cacheRef.current, publish);
+    await realtime.publish(publish.room_id, publish.name, publish.profile, publish.data, publish.id);
+    await deleteCachedPublish(cacheRef.current, publish.id);
     await refreshConversations();
     return true;
   }, [refreshConversations]);
@@ -295,39 +342,70 @@ export function useChatClient() {
     readTimersRef.current.set(key, timer);
   }, []);
 
+  const replayOutbox = useCallback(async () => {
+    const realtime = realtimeRef.current;
+    const cache = cacheRef.current;
+    if (!realtime || !cache || outboxReplayStartedRef.current) return;
+    outboxReplayStartedRef.current = true;
+    try {
+      const publishes = await loadCachedPublishes(cache);
+      await Promise.all(
+        publishes.map(async (publish) => {
+          await realtime.publish(publish.room_id, publish.name, publish.profile, publish.data, publish.id);
+          await deleteCachedPublish(cache, publish.id);
+        }),
+      );
+    } catch (error) {
+      outboxReplayStartedRef.current = false;
+      throw error;
+    }
+  }, []);
+
   const connect = useCallback(() => {
-    const existing = socketRef.current;
-    if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) return;
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const socket = new WebSocket(`${protocol}//${location.host}/ws`);
-    socketRef.current = socket;
-    socket.onopen = () => {
-      reconnectRef.current = 500;
-      dispatch({ type: 'connected', value: true });
-    };
-    socket.onclose = () => {
-      dispatch({ type: 'connected', value: false });
-      window.setTimeout(connect, reconnectRef.current);
-      reconnectRef.current = Math.min(reconnectRef.current * 2, 10000);
-    };
-    socket.onmessage = async ({ data }) => {
-      const message = JSON.parse(data as string) as ServerMessage;
-      if (message.type === 'conversation.changed') {
-        const conversations = await refreshConversations();
-        const conversation = conversations.find((entry) => entry.id === message.conversation_id);
-        if (conversation) {
-          const bucket = stateRef.current.events[conversation.id] || {};
-          await syncEvents(conversation.id, contiguousSeq(conversation, bucket));
-          if (stateRef.current.selected?.id === conversation.id) await loadMembers(conversation);
-        }
-      } else if (message.type === 'conversation.deleted') {
-        dispatch({ type: 'drop_events', conversation_id: message.conversation_id });
-        const latest = stateRef.current;
-        if (latest.selected?.id === message.conversation_id) dispatch({ type: 'selected', selected: null });
-        await refreshConversations();
-      }
-    };
-  }, [loadMembers, refreshConversations, syncEvents]);
+    if (!realtimeRef.current) {
+      realtimeRef.current = new RealtimeClient({
+        cursors: () => {
+          const cursors: Record<string, number> = {};
+          const current = stateRef.current;
+          for (const conversation of current.conversations) {
+            cursors[conversation.id] = contiguousSeq(conversation, current.events[conversation.id] || {});
+          }
+          return cursors;
+        },
+        onConnection: (connected) => dispatch({ type: 'connected', value: connected }),
+        onEvent: async (message: DeliveryEvent) => {
+          if (message.profile !== 'durable' || !message.sequence) return;
+          const item: Event = {
+            conversation_id: message.room_id,
+            seq: message.sequence,
+            id: message.id,
+            sender_id: message.actor_id || null,
+            client_message_id: message.publish_id || null,
+            type: message.name,
+            payload: message.data,
+            created_at: message.created_at,
+          };
+          dispatch({ type: 'events', conversation_id: message.room_id, events: [item] });
+          await cacheEvents(cacheRef.current, [item]);
+          if (message.recovered) return;
+          const conversations = await refreshConversations();
+          const conversation = conversations.find((entry) => entry.id === message.room_id);
+          if (conversation && stateRef.current.selected?.id === conversation.id && message.name !== 'message.created') {
+            await loadMembers(conversation);
+          }
+        },
+        onSyncEnd: async () => {
+          await refreshConversations();
+        },
+        onRoomsChanged: async () => {
+          await refreshConversations();
+        },
+        onError: (error) => showNotice(error.message, true),
+      });
+    }
+    realtimeRef.current.connect();
+    void replayOutbox().catch((error: Error) => showNotice(error.message, true));
+  }, [loadMembers, refreshConversations, replayOutbox, showNotice]);
 
   const loadContacts = useCallback(async () => {
     const result = await api<{ contacts: Contact[] }>('/api/contacts');
@@ -410,6 +488,8 @@ export function useChatClient() {
   );
 
   const logout = useCallback(async () => {
+    realtimeRef.current?.close();
+    outboxReplayStartedRef.current = false;
     await api('/auth/logout', { method: 'POST', body: '{}' });
     if (cacheRef.current) cacheRef.current.close();
     const user = stateRef.current.user;
@@ -417,14 +497,17 @@ export function useChatClient() {
     location.href = '/login';
   }, []);
 
+  useEffect(() => () => realtimeRef.current?.close(), []);
+
   const bootstrap = useCallback(
     async (user: User) => {
       dispatch({ type: 'user', user });
       cacheRef.current = await openCache(`chat-${user.id}`).catch(() => null);
       const conversations = await refreshConversations();
+      await replayOutbox().catch((error: Error) => showNotice(error.message, true));
       return conversations;
     },
-    [refreshConversations],
+    [refreshConversations, replayOutbox, showNotice],
   );
 
   return {

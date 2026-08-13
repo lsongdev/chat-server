@@ -169,10 +169,12 @@ func TestOIDCLoginFlow(t *testing.T) {
 		t.Fatalf("invalid mobile callback: %q %v", callbackURL, err)
 	}
 	mobileTokenResponse := httptest.NewRecorder()
-	auth.MobileToken(mobileTokenResponse, httptest.NewRequest(
+	mobileTokenRequest := httptest.NewRequest(
 		http.MethodPost, "http://chat.example/auth/mobile/token",
 		strings.NewReader(`{"code":"`+callbackURL.Query().Get("code")+`","code_verifier":"`+verifier+`"}`),
-	))
+	)
+	mobileTokenRequest.Header.Set("Content-Type", "application/json")
+	auth.MobileToken(mobileTokenResponse, mobileTokenRequest)
 	if mobileTokenResponse.Code != http.StatusOK {
 		t.Fatalf("mobile token returned %d: %s", mobileTokenResponse.Code, mobileTokenResponse.Body.String())
 	}

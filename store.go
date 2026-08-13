@@ -840,7 +840,10 @@ func (s *Store) ListEvents(ctx context.Context, userID, conversationID uuid.UUID
 	return events, rows.Err()
 }
 
-func (s *Store) AppendMessage(ctx context.Context, userID, conversationID, clientEventID uuid.UUID, content json.RawMessage) (Event, error) {
+// AppendDeliveryEvent is the Chat Store adapter's atomic durable append. It
+// keeps the existing conversation event log authoritative while allowing the
+// delivery core to carry business-defined event names.
+func (s *Store) AppendDeliveryEvent(ctx context.Context, userID, conversationID, clientEventID uuid.UUID, eventType string, payload json.RawMessage) (Event, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Event{}, err
@@ -882,7 +885,7 @@ func (s *Store) AppendMessage(ctx context.Context, userID, conversationID, clien
 		WHERE id=$1 RETURNING last_seq`, conversationID).Scan(&seq); err != nil {
 		return Event{}, err
 	}
-	event := Event{ConversationID: conversationID, Seq: seq, ID: uuid.New(), SenderID: &userID, ClientMessageID: &clientEventID, Type: "message.created", Payload: content}
+	event := Event{ConversationID: conversationID, Seq: seq, ID: uuid.New(), SenderID: &userID, ClientMessageID: &clientEventID, Type: eventType, Payload: payload}
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(email,''),COALESCE(display_name,username,email,'') FROM users WHERE id=$1`, userID).Scan(&event.SenderEmail, &event.SenderName); err != nil {
 		return Event{}, err
 	}

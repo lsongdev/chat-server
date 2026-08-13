@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,16 +14,17 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	"github.com/lsongdev/chat-server/delivery"
 )
 
 type API struct {
-	store  *Store
-	hub    *Hub
-	config Config
+	store    *Store
+	delivery *delivery.Engine
+	config   Config
 }
 
-func NewAPI(store *Store, hub *Hub, cfg Config) *API {
-	return &API{store: store, hub: hub, config: cfg}
+func NewAPI(store *Store, messageDelivery *delivery.Engine, cfg Config) *API {
+	return &API{store: store, delivery: messageDelivery, config: cfg}
 }
 
 func (a *API) Me(w http.ResponseWriter, r *http.Request) {
@@ -62,9 +64,9 @@ func (a *API) CreateConversation(w http.ResponseWriter, r *http.Request) {
 		handleStoreError(w, r, err)
 		return
 	}
-	a.hub.AddUserConversation(user.ID, conversation.ID)
+	a.refreshDeliveryIdentity(r.Context(), user.ID)
 	if event.ID != uuid.Nil {
-		a.hub.BroadcastChanged(conversation.ID, event.Seq)
+		a.notifyCommitted(r.Context(), event)
 	}
 	writeJSON(w, http.StatusCreated, conversation)
 }
@@ -113,8 +115,8 @@ func (a *API) AddMember(w http.ResponseWriter, r *http.Request) {
 		handleStoreError(w, r, err)
 		return
 	}
-	a.hub.AddUserConversation(member.UserID, conversationID)
-	a.hub.BroadcastChanged(conversationID, event.Seq)
+	a.refreshDeliveryIdentity(r.Context(), member.UserID)
+	a.notifyCommitted(r.Context(), event)
 	writeJSON(w, http.StatusCreated, addMemberAvatar(member))
 }
 
@@ -141,7 +143,7 @@ func (a *API) RenameConversation(w http.ResponseWriter, r *http.Request) {
 		handleStoreError(w, r, err)
 		return
 	}
-	a.hub.BroadcastChanged(conversationID, event.Seq)
+	a.notifyCommitted(r.Context(), event)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -152,14 +154,13 @@ func (a *API) DeleteConversation(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, "invalid_conversation_id", "conversation id is invalid")
 		return
 	}
-	members, err := a.store.DeleteConversation(r.Context(), user.ID, conversationID)
+	_, err = a.store.DeleteConversation(r.Context(), user.ID, conversationID)
 	if err != nil {
 		handleStoreError(w, r, err)
 		return
 	}
-	a.hub.BroadcastDeleted(conversationID)
-	for _, memberID := range members {
-		a.hub.RemoveUserConversation(memberID, conversationID)
+	if a.delivery != nil {
+		a.delivery.RemoveRoomRouting(conversationID.String())
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -176,8 +177,8 @@ func (a *API) LeaveConversation(w http.ResponseWriter, r *http.Request) {
 		handleStoreError(w, r, err)
 		return
 	}
-	a.hub.BroadcastChanged(conversationID, event.Seq)
-	a.hub.RemoveUserConversation(user.ID, conversationID)
+	a.refreshDeliveryIdentity(r.Context(), user.ID)
+	a.notifyCommitted(r.Context(), event)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -198,8 +199,8 @@ func (a *API) RemoveMember(w http.ResponseWriter, r *http.Request) {
 		handleStoreError(w, r, err)
 		return
 	}
-	a.hub.BroadcastChanged(conversationID, event.Seq)
-	a.hub.RemoveUserConversation(targetID, conversationID)
+	a.refreshDeliveryIdentity(r.Context(), targetID)
+	a.notifyCommitted(r.Context(), event)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -226,7 +227,8 @@ func (a *API) UpdateMemberRole(w http.ResponseWriter, r *http.Request) {
 		handleStoreError(w, r, err)
 		return
 	}
-	a.hub.BroadcastChanged(conversationID, event.Seq)
+	a.notifyCommitted(r.Context(), event)
+	a.refreshDeliveryIdentity(r.Context(), targetID)
 	writeJSON(w, http.StatusOK, addMemberAvatar(member))
 }
 
@@ -323,31 +325,16 @@ func (a *API) ListEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"events": events})
 }
 
-func (a *API) SendMessage(w http.ResponseWriter, r *http.Request) {
-	user, _ := currentUser(r.Context())
-	conversationID, err := uuid.Parse(mux.Vars(r)["id"])
-	if err != nil {
-		writeProblem(w, http.StatusBadRequest, "invalid_conversation_id", "conversation id is invalid")
-		return
+func (a *API) notifyCommitted(ctx context.Context, event Event) {
+	if a.delivery != nil {
+		_ = a.delivery.NotifyCommitted(ctx, deliveryMessage(event))
 	}
-	var input struct {
-		ClientMessageID uuid.UUID       `json:"client_message_id"`
-		Content         json.RawMessage `json:"content"`
+}
+
+func (a *API) refreshDeliveryIdentity(ctx context.Context, identityID uuid.UUID) {
+	if a.delivery != nil {
+		_ = a.delivery.RefreshIdentity(ctx, identityID.String())
 	}
-	if err := decodeJSON(w, r, &input, int64(a.config.MaxMessageBytes+4096)); err != nil {
-		return
-	}
-	if input.ClientMessageID == uuid.Nil || !validMessageContent(input.Content, a.config.MaxMessageBytes) {
-		writeProblem(w, http.StatusBadRequest, "invalid_message", "message is empty or too large")
-		return
-	}
-	event, err := a.store.AppendMessage(r.Context(), user.ID, conversationID, input.ClientMessageID, input.Content)
-	if err != nil {
-		handleStoreError(w, r, err)
-		return
-	}
-	a.hub.BroadcastChanged(conversationID, event.Seq)
-	writeJSON(w, http.StatusCreated, event)
 }
 
 func (a *API) UpdateRead(w http.ResponseWriter, r *http.Request) {

@@ -9,7 +9,7 @@ npm ci
 npm run dev
 ```
 
-Vite 默认把 `/api`、`/auth`、`/ws`、`/healthz` 和 `/readyz` 代理到 `http://localhost:8080`。可通过 `CHAT_BACKEND` 指向其他后端：
+Vite 默认把 `/api`、`/auth`、`/realtime`、`/healthz` 和 `/readyz` 代理到 `http://127.0.0.1:8081`。可通过 `CHAT_BACKEND` 指向其他后端：
 
 ```sh
 CHAT_BACKEND=http://127.0.0.1:9000 npm run dev

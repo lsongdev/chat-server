@@ -1,6 +1,6 @@
 # Flame Chat
 
-一个单机优先的轻量聊天服务：Go 后端 + React 前端、PostgreSQL 和 WebSocket。客户端通过 OIDC 安全登录，HTTP 承担全部持久写入，WebSocket 只发送实时变更提示。
+一个单机优先的轻量聊天服务：Go 后端 + React 前端、PostgreSQL 和统一 Delivery WebSocket。客户端通过 OIDC 安全登录，Delivery Core 承担消息发布、投递和恢复，HTTP 保留业务命令与查询。
 
 产品中只有“会话”这一种交流容器。会话管理员使用完整邮件地址精确查找并添加已经登录过 Chat 的用户。
 
@@ -8,7 +8,8 @@
 
 ```
 chat-server/
-├── main.go handlers.go auth.go hub.go store.go   # Go 后端：REST /api + WebSocket /ws + 鉴权
+├── delivery/                                     # 通用 Room 消息核心、协议、Store/Bus
+├── main.go handlers.go auth.go store.go          # Chat 业务、REST /api、鉴权与 PG adapter
 └── frontend/                                      # 独立 React + Vite 前端
     ├── vite.config.ts                             # 8080 入口与后端代理
     ├── src/App.tsx                                # 路由与登录门控
@@ -16,7 +17,7 @@ chat-server/
     └── src/pages/ components/                     # 登录 / 聊天 / 邀请 / 联系人 / 设置
 ```
 
-Go 不嵌入或托管前端文件。开发时 Vite 监听 8080，提供 SPA fallback，并把 `/api`、`/auth`、`/ws`、`/healthz` 和 `/readyz` 代理到监听 8081 的 Go 服务。Cloudflare Tunnel 指向 8080，浏览器和 iOS 始终只使用 `https://chat.lsong.org`。
+Go 不嵌入或托管前端文件。开发时 Vite 监听 8080，提供 SPA fallback，并把 `/api`、`/auth`、`/realtime`、`/healthz` 和 `/readyz` 代理到监听 8081 的 Go 服务。Cloudflare Tunnel 指向 8080，浏览器和 iOS 始终只使用 `https://chat.lsong.org`。
 
 Web 路由为 `/chat`（会话列表）、`/chat/{conversationID}`（聊天）、`/contacts` 和 `/settings`。所有客户端只保留服务端返回的活跃会话；离开、被移除或会话删除都会收敛为列表中不存在。会话名称在创建和重命名时均为必填。
 

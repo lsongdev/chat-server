@@ -61,25 +61,3 @@ export interface Event {
 export interface Problem {
   error?: { code?: string; message?: string };
 }
-
-export interface HelloMessage {
-  type: 'hello';
-  protocol_version: number;
-  user_id: string;
-}
-
-export interface ChangedMessage {
-  type: 'conversation.changed';
-  conversation_id: string;
-  last_seq: number;
-}
-
-export interface DeletedMessage {
-  type: 'conversation.deleted';
-  conversation_id: string;
-}
-
-export type ServerMessage =
-  | HelloMessage
-  | ChangedMessage
-  | DeletedMessage;

@@ -6,7 +6,7 @@ This is the wire contract shared by `chat-server`, Flame iOS, and the browser cl
 
 Both clients use the same MyCenter OIDC identity. Browsers start at `GET /auth/login`; the callback creates an opaque HttpOnly `chat_session` cookie and redirects to the validated `return_to` path. iOS starts at `GET /auth/mobile/login` with an app PKCE challenge, receives a two-minute single-use code at the fixed `flame://auth/callback`, and exchanges it with the verifier at `POST /auth/mobile/token` for that same session cookie. The upstream OIDC exchange always uses Authorization Code with PKCE, state, and nonce, and requires a verified email. Clients never receive provider tokens.
 
-All `/api/*` and `/ws` requests use that cookie. Mutations include an allowed `Origin`. `POST /auth/logout` revokes the server session and expires the cookie. `GET /api/me` returns the signed-in user.
+All `/api/*` and `/realtime` requests use that cookie. Mutations and the WebSocket handshake include an allowed `Origin`. `POST /auth/logout` revokes the server session and expires the cookie. `GET /api/me` returns the signed-in user.
 
 Chat API errors always have one shape:
 
@@ -78,44 +78,80 @@ Every conversation has one strictly increasing `seq`. Messages and metadata chan
 
 Fetch ascending history with `GET /api/conversations/{id}/events?after_seq=6&limit=200`. Unknown future event types still advance the contiguous cursor. Mark a cursor read with `POST /api/conversations/{id}/read` and `{"seq":7}`.
 
-All writes use HTTP. Message content is structured once, without JSON encoded inside a string:
-
-```http
-POST /api/conversations/{id}/messages
-
-{"client_message_id":"99780747-d253-494f-81ec-19e380defdd1","content":{"type":"text","text":"hello"}}
-```
-
-Non-text content uses `{"type":"image","data":{...}}`, with the same shape for audio, location, files, contacts, and signaling packets. Retrying the same `client_message_id` for the same sender and conversation returns the original event. Clients merge their outbox using `client_message_id`, then store the server event `id` and `seq`.
-
-## WebSocket protocol version 2
-
-WebSocket is a one-way invalidation channel. Connect to `wss://host/ws` with the session cookie and allowed `Origin`. The first packet is:
+Business metadata continues to use HTTP. Messages are published through the authenticated Delivery WebSocket with a stable client UUID and content structured exactly once:
 
 ```json
-{"type":"hello","protocol_version":2,"user_id":"2ca91885-44af-4fac-a0ef-5ca45fd0e28e"}
+{
+  "op":"publish",
+  "id":"99780747-d253-494f-81ec-19e380defdd1",
+  "room_id":"6d2718e6-39ee-4144-ab8c-aaaf21c1a425",
+  "name":"message.created",
+  "profile":"durable",
+  "data":{"type":"text","text":"hello"}
+}
 ```
 
-Changes produce a compact hint:
+Non-text content uses `{"type":"image","data":{...}}`, with the same shape for audio, location, files, and contacts. Retrying the same publish `id` for the same sender and Room returns the original event. Clients merge their outbox using the event `publish_id`, then store the server event `id` and `sequence`.
+
+## Delivery WebSocket protocol v1
+
+Connect to `wss://host/realtime` with WebSocket subprotocol `delivery.v1`, the session cookie, and an allowed `Origin`. Packets are UTF-8 JSON; text frames are canonical, while binary frames containing UTF-8 JSON are accepted for native-client compatibility. The first packet is:
 
 ```json
-{"type":"conversation.changed","conversation_id":"6d2718e6-39ee-4144-ab8c-aaaf21c1a425","last_seq":7}
+{
+  "op":"hello",
+  "protocol":"delivery.v1",
+  "connection_id":"019ff9d1-...",
+  "identity_id":"2ca91885-44af-4fac-a0ef-5ca45fd0e28e",
+  "max_message_bytes":65536
+}
 ```
 
-Permanent deletion produces:
+The server derives Room routing from active conversation membership; clients do not subscribe to arbitrary topics. After hello, a client supplies the last contiguous cursor for each locally known Room:
 
 ```json
-{"type":"conversation.deleted","conversation_id":"6d2718e6-39ee-4144-ab8c-aaaf21c1a425"}
+{"op":"resume","rooms":{"6d2718e6-39ee-4144-ab8c-aaaf21c1a425":6}}
 ```
 
-Clients do not send application packets over WebSocket. PostgreSQL and HTTP history remain authoritative.
+Durable publish succeeds only after PostgreSQL commits:
+
+```json
+{
+  "op":"ack",
+  "id":"99780747-d253-494f-81ec-19e380defdd1",
+  "status":"committed",
+  "event_id":"6426f043-14f0-4771-8522-acc9c4070908",
+  "sequence":7
+}
+```
+
+Every online Room member, including the sender, receives the resulting fact:
+
+```json
+{
+  "op":"event",
+  "room_id":"6d2718e6-39ee-4144-ab8c-aaaf21c1a425",
+  "id":"6426f043-14f0-4771-8522-acc9c4070908",
+  "publish_id":"99780747-d253-494f-81ec-19e380defdd1",
+  "name":"message.created",
+  "profile":"durable",
+  "sequence":7,
+  "actor_id":"2ca91885-44af-4fac-a0ef-5ca45fd0e28e",
+  "data":{"type":"text","text":"hello"},
+  "created_at":"2026-08-01T12:01:02.345Z"
+}
+```
+
+`ephemeral` uses the same publish/event envelope but returns `status:"accepted"`, has no durable sequence, and is not recovered. Flame accepts it only as `rtc.signal` with a `webrtc:*` payload type; the server assigns a 30-second TTL, and expired or backpressured signals may be dropped. Chat clients cannot publish metadata facts such as rename or membership events. `stream` is reserved in the envelope but is not accepted until snapshot and resume semantics are implemented.
+
+The server sends `room.added` and `room.removed` when membership routing changes. These are realtime control messages; the active conversation HTTP list remains authoritative.
 
 ## Sync algorithm
 
-1. Persist outgoing content with stable client conversation and message UUIDs.
-2. Fetch `/api/me` once after login, connect WebSocket, and fetch active conversations.
+1. Persist outgoing durable content in a local outbox with stable Room and publish UUIDs.
+2. Fetch `/api/me` once after login, connect `/realtime`, and fetch active conversations.
 3. Remove locally synced conversations absent from the active server list.
-4. Page `/events` after each local contiguous cursor; accept only `seq == cursor + 1`.
-5. Merge events by `(conversation_id, seq)` and optimistic messages by `client_message_id`.
-6. On a WebSocket hint, reconnect, foreground activation, or a sequence gap, run another HTTP synchronization pass.
-7. Retry failed writes with the same client UUID and exponential backoff.
+4. Send `resume` cursors and accept durable events only when `sequence == cursor + 1`; HTTP history remains a fallback for foreground reconciliation.
+5. Merge events by `(room_id, sequence)` and optimistic messages by `publish_id`.
+6. On a gap, reconnect, foreground activation, or Room routing change, refresh business metadata and synchronize again.
+7. Keep an unacknowledged publish in the SDK outbox and resend the same UUID after reconnection. UI observes delivery state but does not run its own retry timer.

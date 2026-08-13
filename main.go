@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/lsongdev/chat-server/delivery"
 )
 
 func main() {
@@ -40,10 +41,28 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	hub := NewHub()
 	limiter := NewRateLimiter()
-	api := NewAPI(store, hub, cfg)
-	ws := NewWebSocketHandler(store, hub, cfg)
+	deliveryEngine, err := delivery.New(delivery.Options{
+		Authenticate: func(ctx context.Context, _ *http.Request) (delivery.Identity, error) {
+			user, ok := currentUser(ctx)
+			if !ok {
+				return delivery.Identity{}, delivery.ErrPermissionDenied
+			}
+			return delivery.Identity{ID: user.ID.String()}, nil
+		},
+		Store:               NewChatDeliveryStore(store),
+		Limits:              delivery.Limits{MaxMessageBytes: cfg.MaxMessageBytes},
+		HandleClientPublish: chatClientPublish(cfg.MaxMessageBytes),
+		OriginCheck: func(request *http.Request) bool {
+			_, ok := cfg.AllowedOrigins[request.Header.Get("Origin")]
+			return ok
+		},
+	})
+	if err != nil {
+		return err
+	}
+	defer deliveryEngine.Close()
+	api := NewAPI(store, deliveryEngine, cfg)
 
 	router := mux.NewRouter()
 	router.Handle("/auth/login", limiter.LoginMiddleware(cfg, http.HandlerFunc(auth.Login))).Methods(http.MethodGet)
@@ -69,9 +88,8 @@ func run() error {
 	protected.HandleFunc("/contacts/{contactID}", api.SaveContact).Methods(http.MethodPut)
 	protected.HandleFunc("/contacts/{contactID}", api.DeleteContact).Methods(http.MethodDelete)
 	protected.HandleFunc("/conversations/{id}/events", api.ListEvents).Methods(http.MethodGet)
-	protected.HandleFunc("/conversations/{id}/messages", api.SendMessage).Methods(http.MethodPost)
 	protected.HandleFunc("/conversations/{id}/read", api.UpdateRead).Methods(http.MethodPost)
-	router.Handle("/ws", auth.Required(ws)).Methods(http.MethodGet)
+	router.Handle("/realtime", auth.Required(deliveryEngine.Handler())).Methods(http.MethodGet)
 	router.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }).Methods(http.MethodGet)
 	router.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
@@ -84,7 +102,7 @@ func run() error {
 	}).Methods(http.MethodGet)
 	// The backend intentionally does not serve the web application. In
 	// production the frontend container owns browser routes and proxies only
-	// /api, /auth, /ws and health checks to this service.
+	// /api, /auth, /realtime and health checks to this service.
 
 	server := &http.Server{
 		Addr: cfg.HTTPAddr, Handler: securityHeaders(cfg, recoverer(requestLogger(router))),
