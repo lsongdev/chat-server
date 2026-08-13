@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef } from 'react';
-import { api } from './api';
-import type { Contact, Conversation, Event, Member, ServerMessage, User, UserLookup } from './types';
+import { APIError, api } from './api';
+import type { Contact, Conversation, Event, Member, ServerMessage, User } from './types';
 
 type EventsMap = Record<string, Record<string, Event>>;
 
@@ -47,6 +47,15 @@ const initialState: ChatState = {
   editingContactID: null,
   notice: null,
 };
+
+async function retryNetwork<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof APIError) throw error;
+    return operation();
+  }
+}
 
 function mergeEvents(state: ChatState, conversationID: string, items: Event[]): EventsMap {
   const bucket = state.events[conversationID] || {};
@@ -130,6 +139,23 @@ function loadCachedEvents(cache: IDBDatabase | null, conversationID: string): Pr
   });
 }
 
+function deleteCachedEvents(cache: IDBDatabase | null, conversationID: string): Promise<void> {
+  if (!cache) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const transaction = cache.transaction('events', 'readwrite');
+    const store = transaction.objectStore('events');
+    const request = store.index('conversation').openKeyCursor(IDBKeyRange.only(conversationID));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) return;
+      store.delete(cursor.primaryKey);
+      cursor.continue();
+    };
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
 export function useChatClient() {
   const [state, dispatch] = useReducer(reducer, initialState);
   const stateRef = useRef(state);
@@ -150,6 +176,18 @@ export function useChatClient() {
   const refreshConversations = useCallback(async (): Promise<Conversation[]> => {
     const result = await api<{ conversations: Conversation[] }>('/api/conversations');
     const activeConversations = result.conversations.filter((conversation) => conversation.status === 'active');
+    const activeIDs = new Set(activeConversations.map((conversation) => conversation.id));
+    const previous = stateRef.current;
+    for (const conversation of previous.conversations) {
+      if (!activeIDs.has(conversation.id)) {
+        dispatch({ type: 'drop_events', conversation_id: conversation.id });
+        await deleteCachedEvents(cacheRef.current, conversation.id);
+      }
+    }
+    if (previous.selected && !activeIDs.has(previous.selected.id)) {
+      dispatch({ type: 'selected', selected: null });
+      dispatch({ type: 'members', members: [] });
+    }
     dispatch({ type: 'conversations', conversations: activeConversations });
     return activeConversations;
   }, []);
@@ -196,10 +234,13 @@ export function useChatClient() {
 
   const createConversation = useCallback(
     async (title: string) => {
-      const conversation = await api<Conversation>('/api/conversations', {
-        method: 'POST',
-        body: JSON.stringify({ title }),
-      });
+      const id = crypto.randomUUID();
+      const conversation = await retryNetwork(() =>
+        api<Conversation>('/api/conversations', {
+          method: 'POST',
+          body: JSON.stringify({ id, title }),
+        }),
+      );
       const conversations = await refreshConversations();
       const fresh = conversations.find((item) => item.id === conversation.id) || conversation;
       await selectConversation(fresh);
@@ -208,22 +249,22 @@ export function useChatClient() {
     [refreshConversations, selectConversation],
   );
 
-  const sendMessage = useCallback((text: string): boolean => {
+  const sendMessage = useCallback(async (text: string): Promise<boolean> => {
     const current = stateRef.current;
-    const socket = socketRef.current;
     const conversation = current.selected;
-    if (!text || !socket || socket.readyState !== WebSocket.OPEN || !conversation) return false;
-    socket.send(
-      JSON.stringify({
-        type: 'message.send',
-        request_id: crypto.randomUUID(),
-        conversation_id: conversation.id,
-        client_message_id: crypto.randomUUID(),
-        content: { text },
+    if (!text || !conversation) return false;
+    const clientMessageID = crypto.randomUUID();
+    const item = await retryNetwork(() =>
+      api<Event>(`/api/conversations/${conversation.id}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({ client_message_id: clientMessageID, content: { type: 'text', text } }),
       }),
     );
+    dispatch({ type: 'events', conversation_id: conversation.id, events: [item] });
+    await cacheEvents(cacheRef.current, [item]);
+    await refreshConversations();
     return true;
-  }, []);
+  }, [refreshConversations]);
 
   const updateRead = useCallback((conversation: Conversation, readSeq: number) => {
     if (readSeq < conversation.joined_seq) return;
@@ -241,7 +282,7 @@ export function useChatClient() {
         if (entry) {
           const updated = current.conversations.map((item) =>
             item.id === conversation.id
-              ? { ...item, last_read_seq: Math.max(item.last_read_seq, readSeq) }
+              ? { ...item, last_read_seq: Math.max(item.last_read_seq, readSeq), unread_count: 0 }
               : item,
           );
           dispatch({ type: 'conversations', conversations: updated });
@@ -271,46 +312,22 @@ export function useChatClient() {
     };
     socket.onmessage = async ({ data }) => {
       const message = JSON.parse(data as string) as ServerMessage;
-      if (message.type === 'conversation.event') {
-        const item = message.event;
-        const current = stateRef.current;
-        const bucket = current.events[item.conversation_id] || {};
-        const known = Object.keys(bucket).length ? Math.max(...Object.keys(bucket).map(Number)) : 0;
-        if (known && item.seq > known + 1) await syncEvents(item.conversation_id, known);
-        dispatch({ type: 'events', conversation_id: item.conversation_id, events: [item] });
-        await cacheEvents(cacheRef.current, [item]);
-        let conversations = stateRef.current.conversations;
-        let conversation = conversations.find((entry) => entry.id === item.conversation_id);
-        if (!conversation) {
-          conversations = await refreshConversations();
-          conversation = conversations.find((entry) => entry.id === item.conversation_id);
-        }
+      if (message.type === 'conversation.changed') {
+        const conversations = await refreshConversations();
+        const conversation = conversations.find((entry) => entry.id === message.conversation_id);
         if (conversation) {
-          const updated = conversations.map((entry) =>
-            entry.id === item.conversation_id
-              ? {
-                  ...entry,
-                  last_seq: Math.max(entry.last_seq, item.seq),
-                  title: item.type === 'conversation.renamed' ? String(item.payload.title ?? entry.title) : entry.title,
-                }
-              : entry,
-          );
-          dispatch({ type: 'conversations', conversations: updated });
-        }
-        const latest = stateRef.current;
-        if (latest.selected?.id === item.conversation_id && item.type.startsWith('member.')) {
-          await loadMembers(latest.selected);
+          const bucket = stateRef.current.events[conversation.id] || {};
+          await syncEvents(conversation.id, contiguousSeq(conversation, bucket));
+          if (stateRef.current.selected?.id === conversation.id) await loadMembers(conversation);
         }
       } else if (message.type === 'conversation.deleted') {
         dispatch({ type: 'drop_events', conversation_id: message.conversation_id });
         const latest = stateRef.current;
         if (latest.selected?.id === message.conversation_id) dispatch({ type: 'selected', selected: null });
         await refreshConversations();
-      } else if (message.type === 'error') {
-        showNotice(message.code || '请求失败', true);
       }
     };
-  }, [loadMembers, refreshConversations, showNotice, syncEvents]);
+  }, [loadMembers, refreshConversations, syncEvents]);
 
   const loadContacts = useCallback(async () => {
     const result = await api<{ contacts: Contact[] }>('/api/contacts');
@@ -337,10 +354,6 @@ export function useChatClient() {
     },
     [loadContacts],
   );
-
-  const searchUser = useCallback(async (email: string) => {
-    return api<UserLookup>(`/api/users/search?email=${encodeURIComponent(email)}`);
-  }, []);
 
   const addMember = useCallback(
     async (conversation: Conversation, email: string) => {
@@ -435,7 +448,6 @@ export function useChatClient() {
     loadContacts,
     saveContact,
     deleteContact,
-    searchUser,
     addMember,
     renameConversation,
     removeMember,

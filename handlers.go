@@ -47,38 +47,27 @@ func (a *API) ListConversations(w http.ResponseWriter, r *http.Request) {
 func (a *API) CreateConversation(w http.ResponseWriter, r *http.Request) {
 	user, _ := currentUser(r.Context())
 	var input struct {
-		Title string `json:"title"`
+		ID    uuid.UUID `json:"id"`
+		Title string    `json:"title"`
 	}
 	if err := decodeJSON(w, r, &input, 16<<10); err != nil {
 		return
 	}
 	input.Title = strings.TrimSpace(input.Title)
-	if input.Title == "" || len([]rune(input.Title)) > 100 {
-		writeProblem(w, http.StatusBadRequest, "invalid_conversation", "conversation title is required and must not exceed 100 characters")
+	if input.ID == uuid.Nil || input.Title == "" || len([]rune(input.Title)) > 100 {
+		writeProblem(w, http.StatusBadRequest, "invalid_conversation", "conversation id and a title of at most 100 characters are required")
 		return
 	}
-	conversation, event, err := a.store.CreateConversation(r.Context(), user.ID, input.Title)
-	if err != nil {
-		serverError(w, r, err)
-		return
-	}
-	a.hub.AddUserConversation(user.ID, conversation.ID)
-	a.hub.Broadcast(conversation.ID, map[string]any{"type": "conversation.event", "event": event})
-	writeJSON(w, http.StatusCreated, conversation)
-}
-
-func (a *API) SearchUser(w http.ResponseWriter, r *http.Request) {
-	email, ok := normalizeEmail(r.URL.Query().Get("email"))
-	if !ok {
-		writeProblem(w, http.StatusBadRequest, "invalid_email", "enter a complete email address")
-		return
-	}
-	match, err := a.store.FindUserByEmail(r.Context(), email)
+	conversation, event, err := a.store.CreateConversation(r.Context(), user.ID, input.ID, input.Title)
 	if err != nil {
 		handleStoreError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, addLookupAvatar(match))
+	a.hub.AddUserConversation(user.ID, conversation.ID)
+	if event.ID != uuid.Nil {
+		a.hub.BroadcastChanged(conversation.ID, event.Seq)
+	}
+	writeJSON(w, http.StatusCreated, conversation)
 }
 
 func (a *API) ListMembers(w http.ResponseWriter, r *http.Request) {
@@ -126,8 +115,8 @@ func (a *API) AddMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.hub.AddUserConversation(member.UserID, conversationID)
-	a.hub.Broadcast(conversationID, map[string]any{"type": "conversation.event", "event": event})
-	writeJSON(w, http.StatusCreated, map[string]any{"member": addMemberAvatar(member), "event": event})
+	a.hub.BroadcastChanged(conversationID, event.Seq)
+	writeJSON(w, http.StatusCreated, addMemberAvatar(member))
 }
 
 func (a *API) RenameConversation(w http.ResponseWriter, r *http.Request) {
@@ -153,8 +142,8 @@ func (a *API) RenameConversation(w http.ResponseWriter, r *http.Request) {
 		handleStoreError(w, r, err)
 		return
 	}
-	a.hub.Broadcast(conversationID, map[string]any{"type": "conversation.event", "event": event})
-	writeJSON(w, http.StatusOK, event)
+	a.hub.BroadcastChanged(conversationID, event.Seq)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *API) DeleteConversation(w http.ResponseWriter, r *http.Request) {
@@ -169,7 +158,7 @@ func (a *API) DeleteConversation(w http.ResponseWriter, r *http.Request) {
 		handleStoreError(w, r, err)
 		return
 	}
-	a.hub.Broadcast(conversationID, map[string]any{"type": "conversation.deleted", "conversation_id": conversationID})
+	a.hub.BroadcastDeleted(conversationID)
 	for _, memberID := range members {
 		a.hub.RemoveUserConversation(memberID, conversationID)
 	}
@@ -188,7 +177,7 @@ func (a *API) LeaveConversation(w http.ResponseWriter, r *http.Request) {
 		handleStoreError(w, r, err)
 		return
 	}
-	a.hub.Broadcast(conversationID, map[string]any{"type": "conversation.event", "event": event})
+	a.hub.BroadcastChanged(conversationID, event.Seq)
 	a.hub.RemoveUserConversation(user.ID, conversationID)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -210,7 +199,7 @@ func (a *API) RemoveMember(w http.ResponseWriter, r *http.Request) {
 		handleStoreError(w, r, err)
 		return
 	}
-	a.hub.Broadcast(conversationID, map[string]any{"type": "conversation.event", "event": event})
+	a.hub.BroadcastChanged(conversationID, event.Seq)
 	a.hub.RemoveUserConversation(targetID, conversationID)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -238,8 +227,8 @@ func (a *API) UpdateMemberRole(w http.ResponseWriter, r *http.Request) {
 		handleStoreError(w, r, err)
 		return
 	}
-	a.hub.Broadcast(conversationID, map[string]any{"type": "conversation.event", "event": event})
-	writeJSON(w, http.StatusOK, map[string]any{"member": addMemberAvatar(member), "event": event})
+	a.hub.BroadcastChanged(conversationID, event.Seq)
+	writeJSON(w, http.StatusOK, addMemberAvatar(member))
 }
 
 func (a *API) ListContacts(w http.ResponseWriter, r *http.Request) {
@@ -343,22 +332,22 @@ func (a *API) SendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		ClientMessageID uuid.UUID `json:"client_message_id"`
-		Text            string    `json:"text"`
+		ClientMessageID uuid.UUID       `json:"client_message_id"`
+		Content         json.RawMessage `json:"content"`
 	}
 	if err := decodeJSON(w, r, &input, int64(a.config.MaxMessageBytes+4096)); err != nil {
 		return
 	}
-	if input.ClientMessageID == uuid.Nil || len(input.Text) == 0 || len([]byte(input.Text)) > a.config.MaxMessageBytes {
+	if input.ClientMessageID == uuid.Nil || !validMessageContent(input.Content, a.config.MaxMessageBytes) {
 		writeProblem(w, http.StatusBadRequest, "invalid_message", "message is empty or too large")
 		return
 	}
-	event, err := a.store.AppendMessage(r.Context(), user.ID, conversationID, input.ClientMessageID, input.Text)
+	event, err := a.store.AppendMessage(r.Context(), user.ID, conversationID, input.ClientMessageID, input.Content)
 	if err != nil {
 		handleStoreError(w, r, err)
 		return
 	}
-	a.hub.Broadcast(conversationID, map[string]any{"type": "conversation.event", "event": event})
+	a.hub.BroadcastChanged(conversationID, event.Seq)
 	writeJSON(w, http.StatusCreated, event)
 }
 
@@ -417,7 +406,7 @@ func (a *API) AcceptInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	a.hub.AddUserConversation(user.ID, conversationID)
 	if event.ID != uuid.Nil {
-		a.hub.Broadcast(conversationID, map[string]any{"type": "conversation.event", "event": event})
+		a.hub.BroadcastChanged(conversationID, event.Seq)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"conversation_id": conversationID})
 }
@@ -426,6 +415,24 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+func validMessageContent(raw json.RawMessage, maxBytes int) bool {
+	if len(raw) == 0 || len(raw) > maxBytes {
+		return false
+	}
+	var content struct {
+		Type string          `json:"type"`
+		Text string          `json:"text"`
+		Data json.RawMessage `json:"data"`
+	}
+	if json.Unmarshal(raw, &content) != nil || len(content.Type) == 0 || len(content.Type) > 32 {
+		return false
+	}
+	if content.Type == "text" {
+		return strings.TrimSpace(content.Text) != ""
+	}
+	return len(content.Data) > 0 && string(content.Data) != "null"
 }
 
 func writeProblem(w http.ResponseWriter, status int, code, message string) {

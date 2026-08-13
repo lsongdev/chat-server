@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { contiguousSeq, type ChatClient } from '../useChatClient';
-import type { Conversation, Event, Member, User, UserLookup } from '../types';
+import type { Conversation, Event, Member, User } from '../types';
 
 const SYSTEM_LABELS: Record<string, string> = {
   'conversation.created': '会话已创建',
@@ -36,7 +36,6 @@ export default function ChatModule({
   const [renameStatus, setRenameStatus] = useState({ message: '', error: false });
   const [memberEmail, setMemberEmail] = useState('');
   const [searchStatus, setSearchStatus] = useState({ message: '', error: false });
-  const [searchResult, setSearchResult] = useState<UserLookup | null>(null);
   const [inviteURL, setInviteURL] = useState('');
   const [inviteStatus, setInviteStatus] = useState({ message: '', error: false });
   const [leaveConfirm, setLeaveConfirm] = useState(false);
@@ -57,7 +56,6 @@ export default function ChatModule({
     if (selected) setRenameTitle(selected.title || '');
     setLeaveConfirm(false);
     setDeleteConfirm(false);
-    setSearchResult(null);
     setSearchStatus({ message: '', error: false });
     setInviteURL('');
     setInviteStatus({ message: '', error: false });
@@ -91,11 +89,16 @@ export default function ChatModule({
     }
   };
 
-  const composerSubmit = (event: React.FormEvent) => {
+  const composerSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     const text = messageRef.current;
     if (!text) return;
-    if (!chat.sendMessage(text)) return;
+	try {
+	  if (!(await chat.sendMessage(text))) return;
+	} catch (error) {
+	  chat.showNotice((error as Error).message, true);
+	  return;
+	}
     messageRef.current = '';
     setMessage('');
     requestAnimationFrame(() => {
@@ -126,29 +129,17 @@ export default function ChatModule({
     }
   };
 
-  const memberSearchSubmit = async (event: React.FormEvent) => {
+  const addMemberSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!selected) return;
-    setSearchResult(null);
-    setSearchStatus({ message: '正在查找…', error: false });
+	setSearchStatus({ message: '正在添加…', error: false });
     try {
-      const match = await chat.searchUser(memberEmail.trim());
-      setSearchResult(match);
-      setSearchStatus({ message: '', error: false });
+	  const email = memberEmail.trim();
+	  await chat.addMember(selected, email);
+	  setMemberEmail('');
+	  setSearchStatus({ message: `已添加 ${email}`, error: false });
     } catch (error) {
-      setSearchStatus({ message: (error as Error).message, error: true });
-    }
-  };
-
-  const addMember = async (match: UserLookup) => {
-    if (!selected) return;
-    try {
-      await chat.addMember(selected, match.email);
-      setSearchResult(null);
-      setMemberEmail('');
-      setSearchStatus({ message: `已添加 ${match.email}`, error: false });
-    } catch (error) {
-      setSearchStatus({ message: (error as Error).message, error: true });
+	  setSearchStatus({ message: (error as Error).message, error: true });
     }
   };
 
@@ -286,7 +277,7 @@ export default function ChatModule({
   };
 
   const canManage = selected?.status === 'active' && ['owner', 'admin'].includes(selected.role);
-  const composerEnabled = !!selected && selected.status === 'active' && chat.connected;
+  const composerEnabled = !!selected && selected.status === 'active';
   const empty = events.length === 0 ? (selected ? '还没有消息' : '创建或选择一个会话开始聊天') : null;
 
   return (
@@ -315,7 +306,7 @@ export default function ChatModule({
               >
                 <span className="conversation-row">
                   <span>{titleOf(conversation)}</span>
-                  {conversation.last_seq > conversation.last_read_seq && (
+                  {conversation.unread_count > 0 && (
                     <span className="unread" aria-label="有新消息">
                       ●
                     </span>
@@ -384,7 +375,7 @@ export default function ChatModule({
               </section>
               <section className="settings-section wide">
                 <h3>添加成员</h3>
-                <form className="inline-form" onSubmit={memberSearchSubmit}>
+	            <form className="inline-form" onSubmit={addMemberSubmit}>
                   <div className="field">
                     <label htmlFor="member-email">完整邮件地址</label>
                     <input
@@ -399,7 +390,7 @@ export default function ChatModule({
                     />
                   </div>
                   <button type="submit" disabled={!canManage}>
-                    查找用户
+	                添加成员
                   </button>
                 </form>
                 <p className="muted small" style={{ marginTop: 8 }}>
@@ -408,22 +399,6 @@ export default function ChatModule({
                 <p id="search-status" className={`status small${searchStatus.error ? ' error' : ''}`} role="status">
                   {searchStatus.message}
                 </p>
-                {searchResult && (
-                  <div id="search-result" className="search-result">
-                    <div className="member-row">
-                      <div className="identity-row">
-                        <img className="avatar" alt="" referrerPolicy="no-referrer" src={searchResult.avatar_url} />
-                        <div>
-                          <div className="member-email">{searchResult.email}</div>
-                          <div className="member-meta">{searchResult.display_name || searchResult.username || '用户'}</div>
-                        </div>
-                      </div>
-                      <button type="button" onClick={() => addMember(searchResult)}>
-                        添加到会话
-                      </button>
-                    </div>
-                  </div>
-                )}
               </section>
               <section className="settings-section wide">
                 <h3>会话成员</h3>

@@ -32,8 +32,3 @@ func addMemberAvatar(member Member) Member {
 	member.AvatarURL = gravatarURL(member.Email, defaultAvatarSize)
 	return member
 }
-
-func addLookupAvatar(user UserLookup) UserLookup {
-	user.AvatarURL = gravatarURL(user.Email, defaultAvatarSize)
-	return user
-}

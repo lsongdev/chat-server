@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -40,21 +41,18 @@ func TestStoreConversationFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conversation, created, err := store.CreateConversation(ctx, creator.ID, "Test conversation")
+	conversation, created, err := store.CreateConversation(ctx, creator.ID, uuid.New(), "Test conversation")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if created.Seq != 1 || created.CreatedAt.IsZero() {
 		t.Fatalf("invalid creation event: %#v", created)
 	}
+	duplicateConversation, duplicateCreated, err := store.CreateConversation(ctx, creator.ID, conversation.ID, "Ignored retry title")
+	if err != nil || duplicateConversation.ID != conversation.ID || duplicateCreated.ID != uuid.Nil {
+		t.Fatalf("conversation retry was not idempotent: %#v %#v %v", duplicateConversation, duplicateCreated, err)
+	}
 
-	lookup, err := store.FindUserByEmail(ctx, strings.ToUpper(memberEmail))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if lookup.UserID != member.ID || lookup.Email != memberEmail {
-		t.Fatalf("unexpected email lookup: %#v", lookup)
-	}
 	added, joined, err := store.AddMemberByEmail(ctx, creator.ID, conversation.ID, strings.ToUpper(memberEmail), 1000)
 	if err != nil || added.UserID != member.ID || joined.Seq != 2 {
 		t.Fatalf("unexpected add result: %#v %#v %v", added, joined, err)
@@ -64,11 +62,12 @@ func TestStoreConversationFlow(t *testing.T) {
 	}
 
 	clientMessageID := uuid.New()
-	message, err := store.AppendMessage(ctx, creator.ID, conversation.ID, clientMessageID, "hello")
+	content := json.RawMessage(`{"type":"text","text":"hello"}`)
+	message, err := store.AppendMessage(ctx, creator.ID, conversation.ID, clientMessageID, content)
 	if err != nil {
 		t.Fatal(err)
 	}
-	duplicate, err := store.AppendMessage(ctx, creator.ID, conversation.ID, clientMessageID, "hello")
+	duplicate, err := store.AppendMessage(ctx, creator.ID, conversation.ID, clientMessageID, content)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,8 +81,16 @@ func TestStoreConversationFlow(t *testing.T) {
 	if len(events) != 2 || events[0].Type != "member.joined" || events[1].Type != "message.created" || events[1].ClientMessageID == nil || *events[1].ClientMessageID != clientMessageID {
 		t.Fatalf("unexpected member-visible events: %#v", events)
 	}
+	memberConversations, err := store.ListConversations(ctx, member.ID)
+	if err != nil || len(memberConversations) != 1 || memberConversations[0].UnreadCount != 1 {
+		t.Fatalf("unexpected unread message count: %#v %v", memberConversations, err)
+	}
 	if err := store.UpdateRead(ctx, member.ID, conversation.ID, message.Seq); err != nil {
 		t.Fatal(err)
+	}
+	memberConversations, err = store.ListConversations(ctx, member.ID)
+	if err != nil || len(memberConversations) != 1 || memberConversations[0].UnreadCount != 0 {
+		t.Fatalf("read cursor did not clear unread messages: %#v %v", memberConversations, err)
 	}
 	renamed, err := store.RenameConversation(ctx, creator.ID, conversation.ID, "Renamed conversation")
 	if err != nil || renamed.Type != "conversation.renamed" {
@@ -116,6 +123,10 @@ func TestStoreConversationFlow(t *testing.T) {
 	if err != nil || left.Type != "member.left" || newOwner == nil || *newOwner != member.ID {
 		t.Fatalf("owner transfer on leave failed: %#v %v %v", left, newOwner, err)
 	}
+	leftConversations, err := store.ListConversations(ctx, creator.ID)
+	if err != nil || len(leftConversations) != 0 {
+		t.Fatalf("left conversation remained active: %#v %v", leftConversations, err)
+	}
 	third, err := store.UpsertOIDCUser(ctx, "https://issuer.example", OIDCClaims{Subject: "third-" + testID, Name: "Third", Email: "third-" + testID + "@example.com"})
 	if err != nil {
 		t.Fatal(err)
@@ -137,37 +148,5 @@ func TestStoreConversationFlow(t *testing.T) {
 	deletedMembers, err := store.DeleteConversation(ctx, member.ID, conversation.ID)
 	if err != nil || len(deletedMembers) != 3 {
 		t.Fatalf("conversation delete failed: %#v %v", deletedMembers, err)
-	}
-}
-
-func TestEmailAndOIDCIdentityConverge(t *testing.T) {
-	databaseURL := os.Getenv("CHAT_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("CHAT_TEST_DATABASE_URL is not set")
-	}
-	ctx := context.Background()
-	store, err := OpenStore(ctx, databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
-	email := "identity-" + uuid.NewString() + "@example.com"
-	native, err := store.UpsertEmailUser(ctx, "Native Name", email)
-	if err != nil {
-		t.Fatal(err)
-	}
-	browser, err := store.UpsertOIDCUser(ctx, "https://issuer.example", OIDCClaims{Subject: uuid.NewString(), Name: "Browser Name", Email: email, EmailVerified: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	again, err := store.UpsertEmailUser(ctx, "Latest Name", strings.ToUpper(email))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if native.ID != browser.ID || browser.ID != again.ID {
-		t.Fatalf("login methods created different users: %s %s %s", native.ID, browser.ID, again.ID)
 	}
 }

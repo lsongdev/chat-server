@@ -127,7 +127,7 @@ func (a *Auth) Callback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	email, ok := normalizeEmail(claims.Email)
-	if !ok {
+	if !ok || !claims.EmailVerified {
 		http.Error(w, "identity provider did not return a valid email", http.StatusUnauthorized)
 		return
 	}
@@ -152,47 +152,6 @@ func (a *Auth) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 	a.setSessionCookie(w, sessionToken, time.Now().Add(a.config.SessionTTL))
 	http.Redirect(w, r, attempt.ReturnTo, http.StatusFound)
-}
-
-func (a *Auth) EmailLogin(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Name  string `json:"name"`
-		Email string `json:"email"`
-	}
-	if err := decodeJSON(w, r, &input, 8<<10); err != nil {
-		return
-	}
-	input.Name = strings.TrimSpace(input.Name)
-	email, ok := normalizeEmail(input.Email)
-	if input.Name == "" || len([]rune(input.Name)) > 80 || !ok {
-		writeProblem(w, http.StatusBadRequest, "invalid_identity", "name and a valid email address are required")
-		return
-	}
-	user, err := a.store.UpsertEmailUser(r.Context(), input.Name, email)
-	if err != nil {
-		if errors.Is(err, ErrAmbiguousEmail) {
-			writeProblem(w, http.StatusConflict, "ambiguous_email", "this email belongs to more than one existing account")
-			return
-		}
-		serverError(w, r, err)
-		return
-	}
-	if user.Status != "active" {
-		writeProblem(w, http.StatusForbidden, "account_unavailable", "account is unavailable")
-		return
-	}
-	token, err := randomToken(32)
-	if err != nil {
-		serverError(w, r, err)
-		return
-	}
-	expires := time.Now().Add(a.config.SessionTTL)
-	if err := a.store.CreateSession(r.Context(), user.ID, token, r.UserAgent(), clientIP(r, a.config.TrustProxyHeaders), expires); err != nil {
-		serverError(w, r, err)
-		return
-	}
-	a.setSessionCookie(w, token, expires)
-	writeJSON(w, http.StatusOK, addUserAvatar(user))
 }
 
 func (a *Auth) Logout(w http.ResponseWriter, r *http.Request) {

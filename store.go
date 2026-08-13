@@ -165,8 +165,8 @@ func (s *Store) UpsertOIDCUser(ctx context.Context, issuer string, claims OIDCCl
 		return User{}, err
 	}
 
-	// Native and browser logins converge on the same account by normalized email.
-	// Only an unambiguous match is linked to a new OIDC identity.
+	// OIDC identities converge on the same account by normalized verified email.
+	// Only an unambiguous match is linked to a new identity.
 	if email, ok := normalizeEmail(claims.Email); ok {
 		var count int
 		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM users WHERE lower(email)=lower($1)`, email).Scan(&count); err != nil {
@@ -211,51 +211,6 @@ func (s *Store) UpsertOIDCUser(ctx context.Context, issuer string, claims OIDCCl
 	return user, nil
 }
 
-// UpsertEmailUser is the intentionally small native-client identity flow. Email is
-// the stable login identifier; no password or provider token is stored.
-func (s *Store) UpsertEmailUser(ctx context.Context, name, email string) (User, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return User{}, err
-	}
-	defer tx.Rollback()
-	user := User{ID: uuid.New()}
-	var count int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM users WHERE lower(email)=lower($1)`, email).Scan(&count); err != nil {
-		return User{}, err
-	}
-	if count > 1 {
-		return User{}, ErrAmbiguousEmail
-	}
-	if count == 1 {
-		err := tx.QueryRowContext(ctx, `UPDATE users SET display_name=$2,email=$1,last_login_at=now(),updated_at=now()
-			WHERE lower(email)=lower($1)
-			RETURNING id,oidc_subject,COALESCE(username,''),COALESCE(display_name,''),COALESCE(email,''),
-				email_verified,COALESCE(picture_url,''),status`, email, name).Scan(&user.ID, &user.Subject, &user.Username, &user.DisplayName, &user.Email, &user.EmailVerified, &user.PictureURL, &user.Status)
-		if err != nil {
-			return User{}, err
-		}
-		if err := tx.Commit(); err != nil {
-			return User{}, err
-		}
-		return user, nil
-	}
-	err = tx.QueryRowContext(ctx, `
-		INSERT INTO users(id,oidc_issuer,oidc_subject,display_name,email,email_verified,last_login_at)
-		VALUES($1,'email',$2,NULLIF($3,''),$2,true,now())
-		RETURNING id,oidc_subject,COALESCE(username,''),COALESCE(display_name,''),
-			COALESCE(email,''),email_verified,COALESCE(picture_url,''),status`,
-		user.ID, email, name).Scan(&user.ID, &user.Subject, &user.Username,
-		&user.DisplayName, &user.Email, &user.EmailVerified, &user.PictureURL, &user.Status)
-	if err != nil {
-		return User{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return User{}, err
-	}
-	return user, nil
-}
-
 func (s *Store) CreateSession(ctx context.Context, userID uuid.UUID, rawToken, userAgent, ip string, expiresAt time.Time) error {
 	hash := sha256.Sum256([]byte(rawToken))
 	var ipValue any
@@ -290,14 +245,38 @@ func (s *Store) DeleteSession(ctx context.Context, rawToken string) error {
 	return err
 }
 
-func (s *Store) CreateConversation(ctx context.Context, creator uuid.UUID, title string) (Conversation, Event, error) {
+func (s *Store) CreateConversation(ctx context.Context, creator, conversationID uuid.UUID, title string) (Conversation, Event, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Conversation{}, Event{}, err
 	}
 	defer tx.Rollback()
 
-	conversation := Conversation{ID: uuid.New(), Title: title, LastSeq: 1, LastReadSeq: 1, JoinedSeq: 1, Role: "owner", Status: "active"}
+	var existing Conversation
+	err = tx.QueryRowContext(ctx, `
+		SELECT c.id,COALESCE(c.title,''),c.last_seq,m.last_read_seq,0,m.joined_seq,m.role,m.status,c.updated_at
+		FROM conversations c JOIN conversation_members m ON m.conversation_id=c.id
+		WHERE c.id=$1 AND m.user_id=$2`, conversationID, creator).Scan(
+		&existing.ID, &existing.Title, &existing.LastSeq, &existing.LastReadSeq, &existing.UnreadCount,
+		&existing.JoinedSeq, &existing.Role, &existing.Status, &existing.UpdatedAt)
+	if err == nil {
+		if existing.Status != "active" {
+			return Conversation{}, Event{}, ErrConflict
+		}
+		return existing, Event{}, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Conversation{}, Event{}, err
+	}
+	var occupied bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM conversations WHERE id=$1)`, conversationID).Scan(&occupied); err != nil {
+		return Conversation{}, Event{}, err
+	}
+	if occupied {
+		return Conversation{}, Event{}, ErrConflict
+	}
+
+	conversation := Conversation{ID: conversationID, Title: title, LastSeq: 1, LastReadSeq: 1, UnreadCount: 0, JoinedSeq: 1, Role: "owner", Status: "active"}
 	if err := tx.QueryRowContext(ctx, `
 		INSERT INTO conversations(id,title,created_by,last_seq)
 		VALUES($1,NULLIF($2,''),$3,1)
@@ -327,9 +306,12 @@ func (s *Store) CreateConversation(ctx context.Context, creator uuid.UUID, title
 
 func (s *Store) ListConversations(ctx context.Context, userID uuid.UUID) ([]Conversation, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT c.id,COALESCE(c.title,''),c.last_seq,m.last_read_seq,m.joined_seq,m.role,m.status,c.updated_at
+		SELECT c.id,COALESCE(c.title,''),c.last_seq,m.last_read_seq,
+			(SELECT count(*) FROM conversation_events e
+			 WHERE e.conversation_id=c.id AND e.seq>m.last_read_seq AND e.event_type='message.created'),
+			m.joined_seq,m.role,m.status,c.updated_at
 		FROM conversation_members m JOIN conversations c ON c.id=m.conversation_id
-		WHERE m.user_id=$1 AND m.status IN ('active','left')
+		WHERE m.user_id=$1 AND m.status='active'
 		ORDER BY c.updated_at DESC`, userID)
 	if err != nil {
 		return nil, err
@@ -339,7 +321,7 @@ func (s *Store) ListConversations(ctx context.Context, userID uuid.UUID) ([]Conv
 	for rows.Next() {
 		var conversation Conversation
 		if err := rows.Scan(&conversation.ID, &conversation.Title,
-			&conversation.LastSeq, &conversation.LastReadSeq, &conversation.JoinedSeq, &conversation.Role,
+			&conversation.LastSeq, &conversation.LastReadSeq, &conversation.UnreadCount, &conversation.JoinedSeq, &conversation.Role,
 			&conversation.Status, &conversation.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -377,35 +359,6 @@ func (s *Store) ListMembers(ctx context.Context, userID, conversationID uuid.UUI
 		members = append(members, member)
 	}
 	return members, rows.Err()
-}
-
-func (s *Store) FindUserByEmail(ctx context.Context, email string) (UserLookup, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id,COALESCE(username,''),COALESCE(display_name,''),email,email_verified,COALESCE(picture_url,'')
-		FROM users WHERE lower(email)=lower($1) AND status='active' ORDER BY id LIMIT 2`, email)
-	if err != nil {
-		return UserLookup{}, err
-	}
-	defer rows.Close()
-	var matches []UserLookup
-	for rows.Next() {
-		var match UserLookup
-		if err := rows.Scan(&match.UserID, &match.Username, &match.DisplayName, &match.Email,
-			&match.EmailVerified, &match.PictureURL); err != nil {
-			return UserLookup{}, err
-		}
-		matches = append(matches, match)
-	}
-	if err := rows.Err(); err != nil {
-		return UserLookup{}, err
-	}
-	if len(matches) == 0 {
-		return UserLookup{}, ErrNotFound
-	}
-	if len(matches) > 1 {
-		return UserLookup{}, ErrAmbiguousEmail
-	}
-	return matches[0], nil
 }
 
 func (s *Store) AddMemberByEmail(ctx context.Context, actorID, conversationID uuid.UUID, email string, maxMembers int) (Member, Event, error) {
@@ -865,7 +818,7 @@ func (s *Store) ListEvents(ctx context.Context, userID, conversationID uuid.UUID
 	return events, rows.Err()
 }
 
-func (s *Store) AppendMessage(ctx context.Context, userID, conversationID, clientEventID uuid.UUID, text string) (Event, error) {
+func (s *Store) AppendMessage(ctx context.Context, userID, conversationID, clientEventID uuid.UUID, content json.RawMessage) (Event, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Event{}, err
@@ -885,10 +838,13 @@ func (s *Store) AppendMessage(ctx context.Context, userID, conversationID, clien
 	var existing Event
 	var senderID uuid.NullUUID
 	err = tx.QueryRowContext(ctx, `
-		SELECT conversation_id,seq,id,sender_id,event_type,payload,created_at
-		FROM conversation_events WHERE conversation_id=$1 AND sender_id=$2 AND client_event_id=$3`,
+		SELECT e.conversation_id,e.seq,e.id,e.sender_id,e.event_type,e.payload,e.created_at,
+			COALESCE(u.email,''),COALESCE(u.display_name,u.username,u.email,'')
+		FROM conversation_events e LEFT JOIN users u ON u.id=e.sender_id
+		WHERE e.conversation_id=$1 AND e.sender_id=$2 AND e.client_event_id=$3`,
 		conversationID, userID, clientEventID).Scan(&existing.ConversationID, &existing.Seq,
-		&existing.ID, &senderID, &existing.Type, &existing.Payload, &existing.CreatedAt)
+		&existing.ID, &senderID, &existing.Type, &existing.Payload, &existing.CreatedAt,
+		&existing.SenderEmail, &existing.SenderName)
 	if err == nil {
 		existing.SenderID = &senderID.UUID
 		existing.ClientMessageID = &clientEventID
@@ -904,8 +860,7 @@ func (s *Store) AppendMessage(ctx context.Context, userID, conversationID, clien
 		WHERE id=$1 RETURNING last_seq`, conversationID).Scan(&seq); err != nil {
 		return Event{}, err
 	}
-	payload, _ := json.Marshal(map[string]string{"text": text})
-	event := Event{ConversationID: conversationID, Seq: seq, ID: uuid.New(), SenderID: &userID, ClientMessageID: &clientEventID, Type: "message.created", Payload: payload}
+	event := Event{ConversationID: conversationID, Seq: seq, ID: uuid.New(), SenderID: &userID, ClientMessageID: &clientEventID, Type: "message.created", Payload: content}
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(email,''),COALESCE(display_name,username,email,'') FROM users WHERE id=$1`, userID).Scan(&event.SenderEmail, &event.SenderName); err != nil {
 		return Event{}, err
 	}

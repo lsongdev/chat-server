@@ -13,7 +13,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func TestWebSocketMessageFlow(t *testing.T) {
+func TestWebSocketChangeNotification(t *testing.T) {
 	databaseURL := os.Getenv("CHAT_TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("CHAT_TEST_DATABASE_URL is not set")
@@ -31,14 +31,15 @@ func TestWebSocketMessageFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conversation, _, err := store.CreateConversation(ctx, user.ID, "WebSocket test")
+	conversation, _, err := store.CreateConversation(ctx, user.ID, uuid.New(), "WebSocket test")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	origin := "http://chat.test"
 	cfg := Config{AllowedOrigins: map[string]struct{}{origin: {}}, MaxMessageBytes: 8192}
-	handler := NewWebSocketHandler(store, NewHub(), cfg)
+	hub := NewHub()
+	handler := NewWebSocketHandler(store, hub, cfg)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handler.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userContextKey, user)))
 	}))
@@ -52,28 +53,12 @@ func TestWebSocketMessageFlow(t *testing.T) {
 	defer connection.Close()
 	_ = connection.SetReadDeadline(time.Now().Add(5 * time.Second))
 	var hello map[string]any
-	if err := connection.ReadJSON(&hello); err != nil || hello["type"] != "hello" {
+	if err := connection.ReadJSON(&hello); err != nil || hello["type"] != "hello" || hello["protocol_version"] != float64(2) {
 		t.Fatalf("missing hello: %#v %v", hello, err)
 	}
-	clientMessageID := uuid.New()
-	requestID := uuid.NewString()
-	if err := connection.WriteJSON(map[string]any{
-		"type": "message.send", "request_id": requestID,
-		"conversation_id": conversation.ID, "client_message_id": clientMessageID,
-		"content": map[string]string{"text": "hello websocket"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	var stored map[string]any
-	if err := connection.ReadJSON(&stored); err != nil || stored["type"] != "message.stored" {
-		t.Fatalf("missing stored acknowledgement: %#v %v", stored, err)
-	}
-	var broadcast map[string]any
-	if err := connection.ReadJSON(&broadcast); err != nil || broadcast["type"] != "conversation.event" {
-		t.Fatalf("missing broadcast: %#v %v", broadcast, err)
-	}
-	events, err := store.ListEvents(ctx, user.ID, conversation.ID, 1, 10)
-	if err != nil || len(events) != 1 || events[0].Type != "message.created" {
-		t.Fatalf("websocket message was not persisted: %#v %v", events, err)
+	hub.BroadcastChanged(conversation.ID, conversation.LastSeq)
+	var changed map[string]any
+	if err := connection.ReadJSON(&changed); err != nil || changed["type"] != "conversation.changed" {
+		t.Fatalf("missing change notification: %#v %v", changed, err)
 	}
 }

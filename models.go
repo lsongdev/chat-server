@@ -24,6 +24,7 @@ type Conversation struct {
 	Title       string    `json:"title,omitempty"`
 	LastSeq     int64     `json:"last_seq"`
 	LastReadSeq int64     `json:"last_read_seq"`
+	UnreadCount int64     `json:"unread_count"`
 	JoinedSeq   int64     `json:"joined_seq"`
 	Role        string    `json:"role"`
 	Status      string    `json:"status"`
@@ -41,16 +42,6 @@ type Member struct {
 	Role          string    `json:"role"`
 	Status        string    `json:"status"`
 	JoinedSeq     int64     `json:"joined_seq"`
-}
-
-type UserLookup struct {
-	UserID        uuid.UUID `json:"user_id"`
-	Username      string    `json:"username,omitempty"`
-	DisplayName   string    `json:"display_name,omitempty"`
-	Email         string    `json:"email"`
-	EmailVerified bool      `json:"email_verified"`
-	PictureURL    string    `json:"picture_url,omitempty"`
-	AvatarURL     string    `json:"avatar_url"`
 }
 
 type Contact struct {

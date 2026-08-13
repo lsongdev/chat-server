@@ -82,3 +82,22 @@ func TestNormalizeEmail(t *testing.T) {
 		}
 	}
 }
+
+func TestValidMessageContent(t *testing.T) {
+	for _, body := range []string{
+		`{"type":"text","text":"hello"}`,
+		`{"type":"image","data":{"url":"https://example.com/image.jpg"}}`,
+	} {
+		if !validMessageContent([]byte(body), 4096) {
+			t.Fatalf("valid message content was rejected: %s", body)
+		}
+	}
+	for _, body := range []string{
+		``, `{"text":"hello"}`, `{"type":"text","text":""}`, `{"type":"text","text":"   "}`,
+		`{"type":"image"}`, `{"type":"image","data":null}`,
+	} {
+		if validMessageContent([]byte(body), 4096) {
+			t.Fatalf("invalid message content was accepted: %s", body)
+		}
+	}
+}

@@ -47,14 +47,12 @@ func run() error {
 
 	router := mux.NewRouter()
 	router.Handle("/auth/login", limiter.LoginMiddleware(cfg, http.HandlerFunc(auth.Login))).Methods(http.MethodGet)
-	router.Handle("/auth/email", limiter.LoginMiddleware(cfg, auth.RequireSameOrigin(http.HandlerFunc(auth.EmailLogin)))).Methods(http.MethodPost)
 	router.HandleFunc("/auth/callback", auth.Callback).Methods(http.MethodGet)
 	router.Handle("/auth/logout", auth.Required(auth.RequireSameOrigin(http.HandlerFunc(auth.Logout)))).Methods(http.MethodPost)
 
 	protected := router.PathPrefix("/api").Subrouter()
 	protected.Use(auth.Required, auth.RequireSameOrigin, limiter.MutationMiddleware)
 	protected.HandleFunc("/me", api.Me).Methods(http.MethodGet)
-	protected.HandleFunc("/users/search", api.SearchUser).Methods(http.MethodGet)
 	protected.HandleFunc("/conversations", api.ListConversations).Methods(http.MethodGet)
 	protected.HandleFunc("/conversations", api.CreateConversation).Methods(http.MethodPost)
 	protected.HandleFunc("/conversations/{id}", api.RenameConversation).Methods(http.MethodPatch)

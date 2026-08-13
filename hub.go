@@ -1,9 +1,7 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -119,10 +117,20 @@ func (h *Hub) Broadcast(conversationID uuid.UUID, message any) {
 	}
 }
 
+func (h *Hub) BroadcastChanged(conversationID uuid.UUID, lastSeq int64) {
+	h.Broadcast(conversationID, map[string]any{
+		"type": "conversation.changed", "conversation_id": conversationID, "last_seq": lastSeq,
+	})
+}
+
+func (h *Hub) BroadcastDeleted(conversationID uuid.UUID) {
+	h.Broadcast(conversationID, map[string]any{
+		"type": "conversation.deleted", "conversation_id": conversationID,
+	})
+}
+
 type Client struct {
 	hub            *Hub
-	store          *Store
-	config         Config
 	connection     *websocket.Conn
 	userID         uuid.UUID
 	send           chan []byte
@@ -131,20 +139,9 @@ type Client struct {
 	unregisterOnce sync.Once
 	doneOnce       sync.Once
 	done           chan struct{}
-	messageWindow  time.Time
-	messageCount   int
 }
 
-type wsRequest struct {
-	Type            string          `json:"type"`
-	RequestID       string          `json:"request_id"`
-	ConversationID  uuid.UUID       `json:"conversation_id"`
-	ClientMessageID uuid.UUID       `json:"client_message_id"`
-	Content         json.RawMessage `json:"content"`
-	Seq             int64           `json:"seq"`
-}
-
-func (c *Client) readPump(ctx context.Context) {
+func (c *Client) readPump() {
 	defer c.shutdown()
 	c.connection.SetReadLimit(maxWSFrameSize)
 	_ = c.connection.SetReadDeadline(time.Now().Add(pongWait))
@@ -152,67 +149,13 @@ func (c *Client) readPump(ctx context.Context) {
 		return c.connection.SetReadDeadline(time.Now().Add(pongWait))
 	})
 	for {
-		var request wsRequest
-		if err := c.connection.ReadJSON(&request); err != nil {
+		if _, _, err := c.connection.ReadMessage(); err != nil {
 			if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 				slog.Debug("websocket read ended", "error", err, "user_id", c.userID)
 			}
 			return
 		}
-		switch request.Type {
-		case "message.send":
-			c.handleSend(ctx, request)
-		case "read.update":
-			c.handleRead(ctx, request)
-		default:
-			c.reply(map[string]any{"type": "error", "request_id": request.RequestID, "code": "unknown_event_type"})
-		}
 	}
-}
-
-func (c *Client) handleSend(ctx context.Context, request wsRequest) {
-	now := time.Now()
-	if c.messageWindow.IsZero() || now.Sub(c.messageWindow) >= time.Minute {
-		c.messageWindow, c.messageCount = now, 0
-	}
-	if c.messageCount >= 120 {
-		c.reply(map[string]any{"type": "error", "request_id": request.RequestID, "code": "rate_limited"})
-		return
-	}
-	c.messageCount++
-	var content struct {
-		Text string `json:"text"`
-	}
-	if request.ConversationID == uuid.Nil || request.ClientMessageID == uuid.Nil || json.Unmarshal(request.Content, &content) != nil {
-		c.reply(map[string]any{"type": "error", "request_id": request.RequestID, "code": "invalid_request"})
-		return
-	}
-	if len(content.Text) == 0 || len([]byte(content.Text)) > c.config.MaxMessageBytes {
-		c.reply(map[string]any{"type": "error", "request_id": request.RequestID, "code": "invalid_message"})
-		return
-	}
-	event, err := c.store.AppendMessage(ctx, c.userID, request.ConversationID, request.ClientMessageID, content.Text)
-	if err != nil {
-		code := "store_failed"
-		if errors.Is(err, ErrForbidden) {
-			code = "forbidden"
-		}
-		c.reply(map[string]any{"type": "error", "request_id": request.RequestID, "code": code})
-		return
-	}
-	c.reply(map[string]any{
-		"type": "message.stored", "request_id": request.RequestID,
-		"conversation_id": event.ConversationID, "seq": event.Seq, "message_id": event.ID,
-	})
-	c.hub.Broadcast(event.ConversationID, map[string]any{"type": "conversation.event", "event": event})
-}
-
-func (c *Client) handleRead(ctx context.Context, request wsRequest) {
-	if err := c.store.UpdateRead(ctx, c.userID, request.ConversationID, request.Seq); err != nil {
-		c.reply(map[string]any{"type": "error", "request_id": request.RequestID, "code": "invalid_sequence"})
-		return
-	}
-	c.reply(map[string]any{"type": "read.updated", "request_id": request.RequestID, "conversation_id": request.ConversationID, "seq": request.Seq})
 }
 
 func (c *Client) writePump() {
@@ -263,13 +206,12 @@ func (c *Client) shutdown() {
 type WebSocketHandler struct {
 	store    *Store
 	hub      *Hub
-	config   Config
 	upgrader websocket.Upgrader
 }
 
 func NewWebSocketHandler(store *Store, hub *Hub, cfg Config) *WebSocketHandler {
 	return &WebSocketHandler{
-		store: store, hub: hub, config: cfg,
+		store: store, hub: hub,
 		upgrader: websocket.Upgrader{
 			HandshakeTimeout: 5 * time.Second,
 			CheckOrigin: func(r *http.Request) bool {
@@ -296,12 +238,12 @@ func (h *WebSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	client := &Client{
-		hub: h.hub, store: h.store, config: h.config, connection: connection,
+		hub: h.hub, connection: connection,
 		userID: user.ID, send: make(chan []byte, 64), conversations: make(map[uuid.UUID]struct{}),
 		done: make(chan struct{}),
 	}
 	h.hub.Register(client, conversationIDs)
-	client.reply(map[string]any{"type": "hello", "protocol_version": 1, "user_id": user.ID})
+	client.reply(map[string]any{"type": "hello", "protocol_version": 2, "user_id": user.ID})
 	go client.writePump()
-	client.readPump(r.Context())
+	client.readPump()
 }
