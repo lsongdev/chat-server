@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { contiguousSeq, type ChatClient } from '../useChatClient';
-import type { Conversation, Event, Member, User } from '../types';
+import ContactPickerModal from './ContactPickerModal';
+import type { Contact, Conversation, Event, Member, User } from '../types';
 
 const SYSTEM_LABELS: Record<string, string> = {
   'conversation.created': '会话已创建',
@@ -30,12 +31,12 @@ export default function ChatModule({
   onOpenConversation: (conversationID: string) => void;
   onBackToList: () => void;
 }) {
-  const { selected, user } = chat;
+  const { selected, user, loadContacts, showNotice } = chat;
   const [createTitle, setCreateTitle] = useState('');
   const [renameTitle, setRenameTitle] = useState('');
   const [renameStatus, setRenameStatus] = useState({ message: '', error: false });
-  const [memberEmail, setMemberEmail] = useState('');
-  const [searchStatus, setSearchStatus] = useState({ message: '', error: false });
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerMode, setPickerMode] = useState<'create' | 'add'>('create');
   const [leaveConfirm, setLeaveConfirm] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [message, setMessage] = useState('');
@@ -54,7 +55,6 @@ export default function ChatModule({
     if (selected) setRenameTitle(selected.title || '');
     setLeaveConfirm(false);
     setDeleteConfirm(false);
-    setSearchStatus({ message: '', error: false });
     setConfirmRemove(new Set());
   }, [selected]);
 
@@ -74,12 +74,40 @@ export default function ChatModule({
     return () => cancelAnimationFrame(frame);
   }, [selected?.id, events.length]);
 
-  const createSubmit = async (event: React.FormEvent) => {
-    event.preventDefault();
-    chat.showNotice('', false);
+  useEffect(() => {
+    if (!pickerOpen) return;
+    loadContacts().catch((error: Error) => showNotice(error.message, true));
+  }, [pickerOpen, loadContacts, showNotice]);
+
+  const openCreatePicker = () => {
+    setCreateTitle('');
+    setPickerMode('create');
+    setPickerOpen(true);
+  };
+
+  const openAddPicker = () => {
+    setPickerMode('add');
+    setPickerOpen(true);
+  };
+
+  const handleCreateConfirm = async (contacts: Contact[]) => {
+    const title = createTitle.trim() || contacts.map((contact) => contact.name).join('、') || '未命名会话';
     try {
-      await chat.createConversation(createTitle.trim());
+      await chat.createConversation(title, contacts.map((contact) => contact.email));
       setCreateTitle('');
+      setPickerOpen(false);
+      chat.showNotice('会话已创建。');
+    } catch (error) {
+      chat.showNotice((error as Error).message, true);
+    }
+  };
+
+  const handleAddConfirm = async (contacts: Contact[]) => {
+    if (!selected || contacts.length === 0) return;
+    try {
+      await chat.addMembers(selected, contacts.map((contact) => contact.email));
+      setPickerOpen(false);
+      chat.showNotice(`已添加 ${contacts.length} 位成员。`);
     } catch (error) {
       chat.showNotice((error as Error).message, true);
     }
@@ -122,20 +150,6 @@ export default function ChatModule({
       setRenameStatus({ message: '会话名称已保存。', error: false });
     } catch (error) {
       setRenameStatus({ message: (error as Error).message, error: true });
-    }
-  };
-
-  const addMemberSubmit = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!selected) return;
-	setSearchStatus({ message: '正在添加…', error: false });
-    try {
-	  const email = memberEmail.trim();
-	  await chat.addMember(selected, email);
-	  setMemberEmail('');
-	  setSearchStatus({ message: `已添加 ${email}`, error: false });
-    } catch (error) {
-	  setSearchStatus({ message: (error as Error).message, error: true });
     }
   };
 
@@ -253,18 +267,24 @@ export default function ChatModule({
 
   const canManage = selected?.status === 'active' && ['owner', 'admin'].includes(selected.role);
   const composerEnabled = !!selected && selected.status === 'active';
+  const availableContacts = useMemo(() => {
+    if (pickerMode !== 'add' || !selected) return chat.contacts;
+    const existing = new Set(chat.members.map((member) => member.email).filter(Boolean));
+    return chat.contacts.filter((contact) => !existing.has(contact.email));
+  }, [chat.contacts, chat.members, pickerMode, selected]);
   const empty = events.length === 0 ? (selected ? '还没有消息' : '创建或选择一个会话开始聊天') : null;
 
   return (
     <section className={`module chat-module ${conversationRouteActive ? 'conversation-open' : 'conversation-list'}`}>
       <aside className="card sidebar">
         <div className="sidebar-head">
-          <h2>会话</h2>
+          <div className="sidebar-title-row">
+            <h2>会话</h2>
+            <button type="button" onClick={openCreatePicker}>
+              创建会话
+            </button>
+          </div>
           <p className="muted small">每个会话都可以加入任意成员。</p>
-          <form id="create" className="create-form" onSubmit={createSubmit}>
-            <input id="title" maxLength={100} placeholder="会话名称" aria-label="会话名称" required value={createTitle} onChange={(event) => setCreateTitle(event.target.value)} />
-            <button type="submit">创建会话</button>
-          </form>
         </div>
         <ul id="conversations" aria-label="会话列表">
           {chat.conversations.length === 0 && (
@@ -334,29 +354,11 @@ export default function ChatModule({
               </section>
               <section className="settings-section wide">
                 <h3>添加成员</h3>
-	            <form className="inline-form" onSubmit={addMemberSubmit}>
-                  <div className="field">
-                    <label htmlFor="member-email">完整邮件地址</label>
-                    <input
-                      id="member-email"
-                      type="email"
-                      autoComplete="off"
-                      placeholder="name@example.com"
-                      required
-                      disabled={!canManage}
-                      value={memberEmail}
-                      onChange={(event) => setMemberEmail(event.target.value)}
-                    />
-                  </div>
-                  <button type="submit" disabled={!canManage}>
-	                添加成员
-                  </button>
-                </form>
+                <button type="button" disabled={!canManage} onClick={openAddPicker}>
+                  选择联系人添加
+                </button>
                 <p className="muted small" style={{ marginTop: 8 }}>
-                  只做完整邮件地址精确匹配；用户需先登录过 Chat。
-                </p>
-                <p id="search-status" className={`status small${searchStatus.error ? ' error' : ''}`} role="status">
-                  {searchStatus.message}
+                  从联系人列表中选择并添加进当前会话。
                 </p>
               </section>
               <section className="settings-section wide">
@@ -446,6 +448,27 @@ export default function ChatModule({
           </button>
         </form>
       </main>
+      <ContactPickerModal
+        open={pickerOpen}
+        title={pickerMode === 'create' ? '创建会话' : '添加成员'}
+        confirmLabel={pickerMode === 'create' ? '创建' : '添加'}
+        contacts={availableContacts}
+        onClose={() => setPickerOpen(false)}
+        onConfirm={pickerMode === 'create' ? handleCreateConfirm : handleAddConfirm}
+      >
+        {pickerMode === 'create' && (
+          <div className="field" style={{ marginBottom: 12 }}>
+            <label htmlFor="create-title">会话名称</label>
+            <input
+              id="create-title"
+              maxLength={100}
+              placeholder="未命名会话"
+              value={createTitle}
+              onChange={(event) => setCreateTitle(event.target.value)}
+            />
+          </div>
+        )}
+      </ContactPickerModal>
     </section>
   );
 }

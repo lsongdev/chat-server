@@ -275,8 +275,30 @@ export function useChatClient() {
     [loadMembers, showNotice, syncEvents],
   );
 
+  const addMembers = useCallback(
+    async (conversation: Conversation, emails: string[]) => {
+      const results = await Promise.allSettled(
+        emails.map((email) =>
+          api(`/api/conversations/${conversation.id}/members`, {
+            method: 'POST',
+            body: JSON.stringify({ email }),
+          }),
+        ),
+      );
+      const failed = results
+        .map((result, index) => ({ result, email: emails[index] }))
+        .filter(({ result }) => result.status === 'rejected')
+        .map(({ email, result }) => `${email}: ${(result as PromiseRejectedResult).reason}`);
+      if (failed.length > 0) {
+        throw new Error(`添加失败：${failed.join('；')}`);
+      }
+      await loadMembers(conversation);
+    },
+    [loadMembers],
+  );
+
   const createConversation = useCallback(
-    async (title: string) => {
+    async (title: string, members?: string[]) => {
       const id = crypto.randomUUID();
       const conversation = await retryNetwork(() =>
         api<Conversation>('/api/conversations', {
@@ -284,12 +306,17 @@ export function useChatClient() {
           body: JSON.stringify({ id, title }),
         }),
       );
+      if (members && members.length > 0) {
+        await addMembers(conversation, members).catch((error: Error) =>
+          showNotice(error.message, true),
+        );
+      }
       const conversations = await refreshConversations();
       const fresh = conversations.find((item) => item.id === conversation.id) || conversation;
       await selectConversation(fresh);
       return conversation;
     },
-    [refreshConversations, selectConversation],
+    [addMembers, refreshConversations, selectConversation, showNotice],
   );
 
   const sendMessage = useCallback(async (text: string): Promise<boolean> => {
@@ -435,13 +462,9 @@ export function useChatClient() {
 
   const addMember = useCallback(
     async (conversation: Conversation, email: string) => {
-      await api(`/api/conversations/${conversation.id}/members`, {
-        method: 'POST',
-        body: JSON.stringify({ email }),
-      });
-      await loadMembers(conversation);
+      await addMembers(conversation, [email]);
     },
-    [loadMembers],
+    [addMembers],
   );
 
   const renameConversation = useCallback(async (conversation: Conversation, title: string) => {
@@ -525,6 +548,7 @@ export function useChatClient() {
     saveContact,
     deleteContact,
     addMember,
+    addMembers,
     renameConversation,
     removeMember,
     updateMemberRole,
