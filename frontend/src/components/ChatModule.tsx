@@ -37,6 +37,7 @@ export default function ChatModule({
   const [renameStatus, setRenameStatus] = useState({ message: '', error: false });
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerMode, setPickerMode] = useState<'create' | 'add'>('create');
+  const [contactsLoading, setContactsLoading] = useState(false);
   const [leaveConfirm, setLeaveConfirm] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [message, setMessage] = useState('');
@@ -75,8 +76,30 @@ export default function ChatModule({
   }, [selected?.id, events.length]);
 
   useEffect(() => {
+    let active = true;
+    setContactsLoading(true);
+    loadContacts()
+      .catch((error: Error) => showNotice(error.message, true))
+      .finally(() => {
+        if (active) setContactsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [loadContacts, showNotice]);
+
+  useEffect(() => {
     if (!pickerOpen) return;
-    loadContacts().catch((error: Error) => showNotice(error.message, true));
+    let active = true;
+    setContactsLoading(true);
+    loadContacts()
+      .catch((error: Error) => showNotice(error.message, true))
+      .finally(() => {
+        if (active) setContactsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
   }, [pickerOpen, loadContacts, showNotice]);
 
   const openCreatePicker = () => {
@@ -267,11 +290,10 @@ export default function ChatModule({
 
   const canManage = selected?.status === 'active' && ['owner', 'admin'].includes(selected.role);
   const composerEnabled = !!selected && selected.status === 'active';
-  const availableContacts = useMemo(() => {
-    if (pickerMode !== 'add' || !selected) return chat.contacts;
-    const existing = new Set(chat.members.map((member) => member.email).filter(Boolean));
-    return chat.contacts.filter((contact) => !existing.has(contact.email));
-  }, [chat.contacts, chat.members, pickerMode, selected]);
+  const disabledEmails = useMemo(() => {
+    if (pickerMode !== 'add' || !selected) return new Set<string>();
+    return new Set(chat.members.map((member) => member.email).filter((email): email is string => typeof email === 'string'));
+  }, [chat.members, pickerMode, selected]);
   const empty = events.length === 0 ? (selected ? '还没有消息' : '创建或选择一个会话开始聊天') : null;
 
   return (
@@ -353,16 +375,12 @@ export default function ChatModule({
                 </p>
               </section>
               <section className="settings-section wide">
-                <h3>添加成员</h3>
-                <button type="button" disabled={!canManage} onClick={openAddPicker}>
-                  选择联系人添加
-                </button>
-                <p className="muted small" style={{ marginTop: 8 }}>
-                  从联系人列表中选择并添加进当前会话。
-                </p>
-              </section>
-              <section className="settings-section wide">
-                <h3>会话成员</h3>
+                <div className="settings-section-head">
+                  <h3>会话成员</h3>
+                  <button type="button" disabled={!canManage} onClick={openAddPicker}>
+                    选择联系人添加
+                  </button>
+                </div>
                 <div id="member-list">
                   {chat.members.length === 0 ? (
                     <p className="muted small">正在加载…</p>
@@ -452,7 +470,10 @@ export default function ChatModule({
         open={pickerOpen}
         title={pickerMode === 'create' ? '创建会话' : '添加成员'}
         confirmLabel={pickerMode === 'create' ? '创建' : '添加'}
-        contacts={availableContacts}
+        contacts={chat.contacts}
+        loading={contactsLoading}
+        disabledEmails={disabledEmails}
+        emptyLabel={pickerMode === 'create' ? '还没有联系人' : '没有可添加的联系人'}
         onClose={() => setPickerOpen(false)}
         onConfirm={pickerMode === 'create' ? handleCreateConfirm : handleAddConfirm}
       >

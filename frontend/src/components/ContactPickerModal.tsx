@@ -6,6 +6,9 @@ interface ContactPickerModalProps {
   title: string;
   confirmLabel: string;
   contacts: Contact[];
+  loading?: boolean;
+  emptyLabel?: string;
+  disabledEmails?: Set<string>;
   initialSelected?: Contact[];
   children?: React.ReactNode;
   onClose: () => void;
@@ -17,6 +20,9 @@ export default function ContactPickerModal({
   title,
   confirmLabel,
   contacts,
+  loading = false,
+  emptyLabel = '还没有联系人',
+  disabledEmails = new Set(),
   initialSelected = [],
   children,
   onClose,
@@ -74,41 +80,51 @@ export default function ContactPickerModal({
         <div className="modal-body">
           {children}
           <input
-            type="search"
+            type="text"
             placeholder="搜索姓名或邮箱"
             aria-label="搜索联系人"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
+            autoFocus
           />
           <div className="contact-picker-list">
-            {filtered.length === 0 && (
+            {loading && (
               <p className="muted small" style={{ padding: '12px 0' }}>
-                没有匹配的联系人
+                正在加载联系人…
               </p>
             )}
-            {filtered.map((contact) => {
-              const isSelected = selectedEmails.has(contact.email);
-              return (
-                <button
-                  key={contact.email}
-                  type="button"
-                  className={`contact-picker-row${isSelected ? ' selected' : ''}`}
-                  aria-pressed={isSelected}
-                  onClick={() => toggle(contact)}
-                >
-                  <img className="avatar small" alt="" loading="lazy" referrerPolicy="no-referrer" src={contact.avatar_url} />
-                  <div className="contact-picker-info">
-                    <div className="member-email">{contact.name}</div>
-                    <div className="member-meta">
-                      {contact.note ? `${contact.email} · ${contact.note}` : contact.email}
+            {!loading && filtered.length === 0 && (
+              <p className="muted small" style={{ padding: '12px 0' }}>
+                {query ? '没有匹配的联系人' : emptyLabel}
+              </p>
+            )}
+            {!loading &&
+              filtered.map((contact) => {
+                const isSelected = selectedEmails.has(contact.email);
+                const isDisabled = disabledEmails.has(contact.email);
+                return (
+                  <button
+                    key={contact.email}
+                    type="button"
+                    className={`contact-picker-row${isSelected ? ' selected' : ''}${isDisabled ? ' disabled' : ''}`}
+                    aria-checked={isSelected}
+                    disabled={isDisabled}
+                    onClick={() => toggle(contact)}
+                  >
+                    <span className="contact-picker-check" aria-hidden="true">
+                      {isSelected || isDisabled ? '☑' : '☐'}
+                    </span>
+                    <img className="avatar small" alt="" loading="lazy" referrerPolicy="no-referrer" src={contact.avatar_url} />
+                    <div className="contact-picker-info">
+                      <div className="member-email">{contact.name}</div>
+                      <div className="member-meta">
+                        {contact.note ? `${contact.email} · ${contact.note}` : contact.email}
+                        {isDisabled && ' · 已在会话'}
+                      </div>
                     </div>
-                  </div>
-                  <span className="contact-picker-check" aria-hidden="true">
-                    {isSelected ? '✓' : ''}
-                  </span>
-                </button>
-              );
-            })}
+                  </button>
+                );
+              })}
           </div>
         </div>
         <footer className="modal-foot">
