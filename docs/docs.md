@@ -61,9 +61,9 @@ client UUID ── publish ──> transaction ──> event seq ──> committ
 
 消息内容只编码一次：文本使用 `{"type":"text","text":"..."}`，其他类型使用 `{"type":"image","data":{...}}` 等结构。数据库的 `payload` 直接保存这份 JSON。
 
-## 6. Delivery Core 与同步
+## 6. Delivery、Messaging 与同步
 
-独立 `delivery` package 只认识 Identity、Room、Member、Capability、Message 和 Delivery。Chat 通过 Store adapter 将现有 conversation 表映射为 Room，不建立重复数据。角色由业务层映射为 capabilities，核心负责每次发布时验证当前 membership。
+系统采用三层单向依赖：`delivery` 只认识 Identity ID、routing scope、Publish、Event、Sequence、Cursor、Connection、Store 和 Bus；`messaging` 在其上提供 Room、Member、Capability 与 Grants；Chat 再把 conversation、产品角色和事件 schema 投影到 Messaging，不建立重复数据。每次发布由 Messaging 根据当前 membership 授权，Delivery 只执行可靠投递。
 
 客户端同步流程：
 
@@ -79,7 +79,7 @@ client UUID ── publish ──> transaction ──> event seq ──> committ
 
 ## 7. 单机边界
 
-Delivery Core 默认使用进程内 Memory Bus，适合单实例部署。PostgreSQL 已保证持久数据一致性。未来扩展多实例时只需实现 NATS、MQTT、Redis 或 PostgreSQL Bus adapter；Delivery 协议和客户端无需改变。
+Delivery 内核默认使用进程内 Memory Bus，适合单实例部署。PostgreSQL 已保证持久数据一致性。未来扩展多实例时只需实现 NATS、MQTT、Redis 或 PostgreSQL Bus adapter；Messaging、Chat、Delivery 协议和客户端无需改变。
 
 ## 8. 运行约束
 

@@ -14,68 +14,34 @@ var (
 	ErrInvalid          = errors.New("invalid input")
 )
 
+// Identity is the only user concept understood by Delivery.
 type Identity struct {
 	ID string `json:"id"`
 }
 
-type Room struct {
-	ID        string    `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-type Capability string
-
-const (
-	Receive       Capability = "room.receive"
-	Publish       Capability = "message.publish"
-	ReadHistory   Capability = "history.read"
-	ManageMembers Capability = "members.manage"
-	ManageRoom    Capability = "room.manage"
-)
-
-type Grants map[Capability]bool
-
-func OwnerGrants() Grants {
-	return Grants{Receive: true, Publish: true, ReadHistory: true, ManageMembers: true, ManageRoom: true}
-}
-
-func MemberGrants() Grants {
-	return Grants{Receive: true, Publish: true, ReadHistory: true}
-}
-
-func (g Grants) Allows(capability Capability) bool { return g[capability] }
-
-func (g Grants) Clone() Grants {
-	clone := make(Grants, len(g))
-	for capability, allowed := range g {
-		clone[capability] = allowed
-	}
-	return clone
-}
-
-type Member struct {
-	RoomID       string    `json:"room_id"`
-	IdentityID   string    `json:"identity_id"`
-	Grants       Grants    `json:"grants"`
-	HistoryStart int64     `json:"history_start,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-}
-
+// Profile selects durable delivery or best-effort realtime delivery.
+// It remains part of the wire contract; business meaning stays in the host.
 type Profile string
 
 const (
 	Durable   Profile = "durable"
 	Ephemeral Profile = "ephemeral"
-	Stream    Profile = "stream"
 )
 
-type StreamPosition struct {
-	ID    string `json:"id"`
-	Seq   uint64 `json:"seq"`
-	Final bool   `json:"final"`
+// Publish is a validated request to create or fan out an event.
+type Publish struct {
+	ID        string
+	RoomID    string
+	ActorID   string
+	Name      string
+	Profile   Profile
+	Data      json.RawMessage
+	ExpiresAt *time.Time
 }
 
-type Message struct {
+// Event is the fact routed by Delivery. Durable events have a Sequence;
+// ephemeral events may expire and are never returned by Store.EventsAfter.
+type Event struct {
 	ID        string          `json:"id"`
 	PublishID string          `json:"publish_id,omitempty"`
 	RoomID    string          `json:"room_id"`
@@ -86,55 +52,9 @@ type Message struct {
 	Data      json.RawMessage `json:"data"`
 	CreatedAt time.Time       `json:"created_at"`
 	ExpiresAt *time.Time      `json:"expires_at,omitempty"`
-	Stream    *StreamPosition `json:"stream,omitempty"`
 }
 
-type CreateRoom struct {
-	ID        string
-	CreatorID string
-}
-
-type AddMember struct {
-	ActorID    string
-	RoomID     string
-	IdentityID string
-	Grants     Grants
-}
-
-type UpdateMember = AddMember
-
-type RemoveMember struct {
-	ActorID    string
-	RoomID     string
-	IdentityID string
-}
-
-type PublishRequest struct {
-	ID        string
-	RoomID    string
-	ActorID   string
-	Name      string
-	Profile   Profile
-	Data      json.RawMessage
-	ExpiresAt *time.Time
-	Stream    *StreamPosition
-}
-
-type ReceiptStatus string
-
-const (
-	Accepted  ReceiptStatus = "accepted"
-	Committed ReceiptStatus = "committed"
-)
-
-type Receipt struct {
-	PublishID string        `json:"publish_id"`
-	MessageID string        `json:"message_id,omitempty"`
-	Status    ReceiptStatus `json:"status"`
-	Sequence  int64         `json:"sequence,omitempty"`
-	Message   *Message      `json:"-"`
-}
-
+// ClientPublish is an untrusted wire request plus authenticated identity.
 type ClientPublish struct {
 	IdentityID string
 	ID         string
@@ -142,8 +62,6 @@ type ClientPublish struct {
 	Name       string
 	Profile    Profile
 	Data       json.RawMessage
-	ExpiresAt  *time.Time
-	Stream     *StreamPosition
 }
 
-type ClientPublishHandler func(context.Context, ClientPublish) (PublishRequest, error)
+type ClientPublishHandler func(context.Context, ClientPublish) (Publish, error)

@@ -142,7 +142,7 @@ Every online Room member, including the sender, receives the resulting fact:
 }
 ```
 
-`ephemeral` uses the same publish/event envelope but returns `status:"accepted"`, has no durable sequence, and is not recovered. Flame accepts it only as `rtc.signal` with a `webrtc:*` payload type; the server assigns a 30-second TTL, and expired or backpressured signals may be dropped. Chat clients cannot publish metadata facts such as rename or membership events. `stream` is reserved in the envelope but is not accepted until snapshot and resume semantics are implemented.
+`ephemeral` uses the same publish/event envelope but returns `status:"accepted"`, has no durable sequence, and is not recovered. Flame accepts it only as `rtc.signal` with a `webrtc:*` payload type; the server assigns a 30-second TTL, and expired or backpressured signals may be dropped. Chat clients cannot publish metadata facts such as rename or membership events. The unsupported `stream` profile is rejected; it will get a separate design if snapshot and resume semantics are implemented later.
 
 The server sends `room.added` and `room.removed` when membership routing changes. These are realtime control messages; the active conversation HTTP list remains authoritative.
 

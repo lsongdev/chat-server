@@ -15,9 +15,65 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func testEngine(t *testing.T) (*Engine, *MemoryStore) {
+type testPolicy struct {
+	mu      sync.RWMutex
+	rooms   map[string]map[string]int64
+	blocked map[string]bool
+}
+
+func newTestPolicy() *testPolicy {
+	return &testPolicy{rooms: make(map[string]map[string]int64), blocked: make(map[string]bool)}
+}
+
+func (p *testPolicy) grant(identityID, roomID string, historyStart int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.rooms[identityID] == nil {
+		p.rooms[identityID] = make(map[string]int64)
+	}
+	p.rooms[identityID][roomID] = historyStart
+}
+
+func (p *testPolicy) revoke(identityID, roomID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.rooms[identityID], roomID)
+}
+
+func (p *testPolicy) Routes(_ context.Context, identityID string) ([]string, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	rooms := make([]string, 0, len(p.rooms[identityID]))
+	for roomID := range p.rooms[identityID] {
+		rooms = append(rooms, roomID)
+	}
+	sort.Strings(rooms)
+	return rooms, nil
+}
+
+func (p *testPolicy) CanPublish(_ context.Context, identityID, roomID string) error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if _, ok := p.rooms[identityID][roomID]; !ok || p.blocked[identityID+"\x00"+roomID] {
+		return ErrPermissionDenied
+	}
+	return nil
+}
+
+func (p *testPolicy) HistoryStart(_ context.Context, identityID, roomID string) (int64, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	start, ok := p.rooms[identityID][roomID]
+	if !ok {
+		return 0, ErrPermissionDenied
+	}
+	return start, nil
+}
+
+func testEngine(t *testing.T) (*Engine, *MemoryStore, *testPolicy) {
 	t.Helper()
 	store := NewMemoryStore()
+	policy := newTestPolicy()
 	engine, err := New(Options{
 		Authenticate: func(_ context.Context, request *http.Request) (Identity, error) {
 			identityID := request.Header.Get("X-Identity")
@@ -26,68 +82,39 @@ func testEngine(t *testing.T) (*Engine, *MemoryStore) {
 			}
 			return Identity{ID: identityID}, nil
 		},
-		Store: store,
+		Access: policy,
+		Store:  store,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = engine.Close() })
-	return engine, store
+	return engine, store, policy
 }
 
-func TestEngineRoomPermissionsAndIdempotentPublish(t *testing.T) {
-	engine, _ := testEngine(t)
-	ctx := context.Background()
-	if _, err := engine.CreateRoom(ctx, CreateRoom{ID: "room-1", CreatorID: "alice"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := engine.AddMember(ctx, AddMember{ActorID: "alice", RoomID: "room-1", IdentityID: "bob", Grants: MemberGrants()}); err != nil {
-		t.Fatal(err)
-	}
-	if err := engine.AddMember(ctx, AddMember{ActorID: "bob", RoomID: "room-1", IdentityID: "mallory", Grants: MemberGrants()}); !errors.Is(err, ErrPermissionDenied) {
-		t.Fatalf("member management error = %v, want permission denied", err)
-	}
-	adminGrants := Grants{Receive: true, Publish: true, ReadHistory: true, ManageMembers: true}
-	if err := engine.AddMember(ctx, AddMember{ActorID: "alice", RoomID: "room-1", IdentityID: "admin", Grants: adminGrants}); err != nil {
-		t.Fatal(err)
-	}
-	if err := engine.AddMember(ctx, AddMember{ActorID: "admin", RoomID: "room-1", IdentityID: "owner-2", Grants: OwnerGrants()}); !errors.Is(err, ErrPermissionDenied) {
-		t.Fatalf("capability escalation error = %v, want permission denied", err)
-	}
-
-	publish := PublishRequest{
-		ID: "publish-1", RoomID: "room-1", ActorID: "bob", Name: "message.created",
-		Profile: Durable, Data: json.RawMessage(`{"text":"hello"}`),
-	}
-	first, err := engine.Publish(ctx, publish)
+func TestEngineAuthorizationAndIdempotentPublish(t *testing.T) {
+	engine, _, policy := testEngine(t)
+	policy.grant("alice", "room-1", 0)
+	publish := Publish{ID: "publish-1", RoomID: "room-1", ActorID: "alice", Name: "message.created", Profile: Durable, Data: json.RawMessage(`{"text":"hello"}`)}
+	first, err := engine.Publish(context.Background(), publish)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := engine.Publish(ctx, publish)
+	second, err := engine.Publish(context.Background(), publish)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.PublishID != second.PublishID || first.MessageID != second.MessageID ||
-		first.Sequence != second.Sequence || first.Status != Committed || first.Sequence != 1 {
-		t.Fatalf("receipts = %#v and %#v", first, second)
+	if first.ID != second.ID || first.Sequence != 1 || second.Sequence != 1 {
+		t.Fatalf("events = %#v and %#v", first, second)
 	}
-	events, err := engine.EventsAfter(ctx, "bob", "room-1", 0, 200)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(events) != 1 || events[0].PublishID != "publish-1" {
-		t.Fatalf("events = %#v", events)
+	publish.ActorID = "mallory"
+	if _, err := engine.Publish(context.Background(), publish); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("unauthorized publish error = %v", err)
 	}
 }
 
 func TestMemoryStoreAllocatesContiguousSequenceConcurrently(t *testing.T) {
 	store := NewMemoryStore()
-	createdAt := nowUTC()
-	if err := store.CreateRoom(context.Background(), Room{ID: "room", CreatedAt: createdAt}, Member{
-		RoomID: "room", IdentityID: "alice", Grants: OwnerGrants(), CreatedAt: createdAt,
-	}); err != nil {
-		t.Fatal(err)
-	}
 	const count = 64
 	sequences := make(chan int64, count)
 	var group sync.WaitGroup
@@ -95,16 +122,15 @@ func TestMemoryStoreAllocatesContiguousSequenceConcurrently(t *testing.T) {
 		group.Add(1)
 		go func(index int) {
 			defer group.Done()
-			message, err := store.Append(context.Background(), PublishRequest{
+			event, err := store.Append(context.Background(), Publish{
 				ID:     "publish-" + strings.Repeat("x", index) + string(rune('a'+index%26)),
-				RoomID: "room", ActorID: "alice", Name: "message.created",
-				Profile: Durable, Data: json.RawMessage(`{"ok":true}`),
+				RoomID: "room", ActorID: "alice", Name: "message.created", Profile: Durable, Data: json.RawMessage(`{"ok":true}`),
 			})
 			if err != nil {
 				t.Errorf("append %d: %v", index, err)
 				return
 			}
-			sequences <- message.Sequence
+			sequences <- event.Sequence
 		}(index)
 	}
 	group.Wait()
@@ -122,38 +148,25 @@ func TestMemoryStoreAllocatesContiguousSequenceConcurrently(t *testing.T) {
 }
 
 func TestWebSocketPublishFanoutAndResume(t *testing.T) {
-	engine, _ := testEngine(t)
-	ctx := context.Background()
-	if _, err := engine.CreateRoom(ctx, CreateRoom{ID: "room-1", CreatorID: "alice"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := engine.AddMember(ctx, AddMember{ActorID: "alice", RoomID: "room-1", IdentityID: "bob", Grants: MemberGrants()}); err != nil {
-		t.Fatal(err)
-	}
+	engine, _, policy := testEngine(t)
+	policy.grant("alice", "room-1", 0)
+	policy.grant("bob", "room-1", 0)
 	server := httptest.NewServer(engine.Handler())
 	t.Cleanup(server.Close)
-
 	alice := dialDelivery(t, server.URL, "alice")
 	defer alice.Close()
 	bob := dialDelivery(t, server.URL, "bob")
 	readUntilOp(t, alice, "hello")
 	readUntilOp(t, bob, "hello")
-	if err := alice.WriteJSON(map[string]any{
-		"op": "publish", "id": "client-1", "room_id": "room-1",
-		"name": "message.created", "profile": "durable", "data": map[string]any{"text": "hello"},
-	}); err != nil {
+	if err := alice.WriteJSON(map[string]any{"op": "publish", "id": "client-1", "room_id": "room-1", "name": "message.created", "profile": "durable", "data": map[string]any{"text": "hello"}}); err != nil {
 		t.Fatal(err)
 	}
 	aliceMessages := readUntilOps(t, alice, "ack", "event")
 	bobEvent := readUntilOp(t, bob, "event")
 	if aliceMessages["ack"]["status"] != "committed" || bobEvent["sequence"] != float64(1) {
-		t.Fatalf("alice = %#v, bob event = %#v", aliceMessages, bobEvent)
-	}
-	if bobEvent["publish_id"] != "client-1" || bobEvent["actor_id"] != "alice" {
-		t.Fatalf("event = %#v", bobEvent)
+		t.Fatalf("alice = %#v, bob = %#v", aliceMessages, bobEvent)
 	}
 	_ = bob.Close()
-
 	bob = dialDelivery(t, server.URL, "bob")
 	defer bob.Close()
 	readUntilOp(t, bob, "hello")
@@ -162,16 +175,13 @@ func TestWebSocketPublishFanoutAndResume(t *testing.T) {
 	}
 	messages := readUntilOps(t, bob, "sync.begin", "event", "sync.end")
 	if messages["event"]["recovered"] != true || messages["sync.end"]["sequence"] != float64(1) {
-		t.Fatalf("resume messages = %#v", messages)
+		t.Fatalf("resume = %#v", messages)
 	}
 }
 
 func TestWebSocketAcceptsUTF8JSONBinaryFrame(t *testing.T) {
-	engine, _ := testEngine(t)
-	ctx := context.Background()
-	if _, err := engine.CreateRoom(ctx, CreateRoom{ID: "room-1", CreatorID: "alice"}); err != nil {
-		t.Fatal(err)
-	}
+	engine, _, policy := testEngine(t)
+	policy.grant("alice", "room-1", 0)
 	server := httptest.NewServer(engine.Handler())
 	defer server.Close()
 	alice := dialDelivery(t, server.URL, "alice")
@@ -187,73 +197,51 @@ func TestWebSocketAcceptsUTF8JSONBinaryFrame(t *testing.T) {
 	}
 }
 
-func TestWebSocketEphemeralIsNotRecoveredAndMembershipRevokesRoute(t *testing.T) {
-	engine, _ := testEngine(t)
-	ctx := context.Background()
-	_, _ = engine.CreateRoom(ctx, CreateRoom{ID: "room-1", CreatorID: "alice"})
-	if err := engine.AddMember(ctx, AddMember{ActorID: "alice", RoomID: "room-1", IdentityID: "bob", Grants: MemberGrants()}); err != nil {
-		t.Fatal(err)
-	}
+func TestWebSocketEphemeralAndRoutingRefresh(t *testing.T) {
+	engine, _, policy := testEngine(t)
+	policy.grant("alice", "room-1", 0)
+	policy.grant("bob", "room-1", 0)
 	server := httptest.NewServer(engine.Handler())
-	t.Cleanup(server.Close)
+	defer server.Close()
 	alice := dialDelivery(t, server.URL, "alice")
 	defer alice.Close()
 	bob := dialDelivery(t, server.URL, "bob")
 	defer bob.Close()
 	readUntilOp(t, alice, "hello")
 	readUntilOp(t, bob, "hello")
-
-	if err := alice.WriteJSON(map[string]any{
-		"op": "publish", "id": "signal-1", "room_id": "room-1",
-		"name": "rtc.signal", "profile": "ephemeral", "data": map[string]any{"kind": "ice"},
-	}); err != nil {
+	if err := alice.WriteJSON(map[string]any{"op": "publish", "id": "signal-1", "room_id": "room-1", "name": "rtc.signal", "profile": "ephemeral", "data": map[string]any{"kind": "ice"}}); err != nil {
 		t.Fatal(err)
 	}
 	readUntilOps(t, alice, "ack", "event")
 	if event := readUntilOp(t, bob, "event"); event["profile"] != "ephemeral" {
 		t.Fatalf("event = %#v", event)
 	}
-	if err := engine.RemoveMember(ctx, RemoveMember{ActorID: "alice", RoomID: "room-1", IdentityID: "bob"}); err != nil {
+	policy.revoke("bob", "room-1")
+	if err := engine.RefreshIdentity(context.Background(), "bob"); err != nil {
 		t.Fatal(err)
 	}
-	removed := readUntilOp(t, bob, "room.removed")
-	if removed["room_id"] != "room-1" {
+	if removed := readUntilOp(t, bob, "room.removed"); removed["room_id"] != "room-1" {
 		t.Fatalf("removed = %#v", removed)
-	}
-	if err := bob.WriteJSON(map[string]any{
-		"op": "publish", "id": "blocked", "room_id": "room-1",
-		"name": "message.created", "profile": "durable", "data": map[string]any{"text": "no"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	denied := readUntilOp(t, bob, "error")
-	errorValue := denied["error"].(map[string]any)
-	if errorValue["code"] != "permission_denied" {
-		t.Fatalf("error = %#v", denied)
 	}
 }
 
 func TestWebSocketRequiresDeliverySubprotocol(t *testing.T) {
-	engine, _ := testEngine(t)
+	engine, _, _ := testEngine(t)
 	server := httptest.NewServer(engine.Handler())
 	defer server.Close()
 	header := http.Header{"X-Identity": []string{"alice"}}
 	_, response, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), header)
-	if err == nil {
-		t.Fatal("connection without delivery.v1 unexpectedly succeeded")
-	}
-	if response == nil || response.StatusCode != http.StatusUpgradeRequired {
-		t.Fatalf("response = %#v, want status %d", response, http.StatusUpgradeRequired)
+	if err == nil || response == nil || response.StatusCode != http.StatusUpgradeRequired {
+		t.Fatalf("response = %#v, err = %v", response, err)
 	}
 }
 
 func dialDelivery(t *testing.T, serverURL, identityID string) *websocket.Conn {
 	t.Helper()
-	url := "ws" + strings.TrimPrefix(serverURL, "http")
 	header := http.Header{"X-Identity": []string{identityID}}
 	dialer := *websocket.DefaultDialer
 	dialer.Subprotocols = []string{Subprotocol}
-	connection, response, err := dialer.Dial(url, header)
+	connection, response, err := dialer.Dial("ws"+strings.TrimPrefix(serverURL, "http"), header)
 	if err != nil {
 		if response != nil {
 			t.Fatalf("dial: %v (status %d)", err, response.StatusCode)

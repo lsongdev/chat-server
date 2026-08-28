@@ -2,20 +2,18 @@ package delivery
 
 import "context"
 
-// Store is the durable source of truth. Append must allocate a room sequence
-// and enforce publish idempotency atomically.
+// Access is implemented by a layer above Delivery. It answers only the three
+// routing questions the kernel needs; it does not define a permission model.
+type Access interface {
+	Routes(context.Context, string) ([]string, error)
+	CanPublish(context.Context, string, string) error
+	HistoryStart(context.Context, string, string) (int64, error)
+}
+
+// Store is the durable event source of truth. Append must allocate a room
+// sequence and enforce publish idempotency atomically.
 type Store interface {
-	CreateRoom(context.Context, Room, Member) error
-	DeleteRoom(context.Context, string) error
-	Room(context.Context, string) (Room, error)
-
-	AddMember(context.Context, Member) error
-	UpdateMember(context.Context, Member) error
-	RemoveMember(context.Context, string, string) error
-	Member(context.Context, string, string) (Member, error)
-	RoomsForIdentity(context.Context, string) ([]Room, error)
-
-	Append(context.Context, PublishRequest) (Message, error)
-	EventsAfter(context.Context, string, int64, int) ([]Message, error)
+	Append(context.Context, Publish) (Event, error)
+	EventsAfter(context.Context, string, int64, int) ([]Event, error)
 	HeadSequence(context.Context, string) (int64, error)
 }

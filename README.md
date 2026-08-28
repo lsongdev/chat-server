@@ -1,6 +1,6 @@
 # Flame Chat
 
-一个单机优先的轻量聊天服务：Go 后端 + React 前端、PostgreSQL 和统一 Delivery WebSocket。客户端通过 OIDC 安全登录，Delivery Core 承担消息发布、投递和恢复，HTTP 保留业务命令与查询。
+一个单机优先的轻量聊天服务：Go 后端 + React 前端、PostgreSQL 和统一 Delivery WebSocket。客户端通过 OIDC 安全登录；Delivery 内核负责可靠投递，Messaging 中层负责 Room/Member/Capability，Chat 层负责产品业务。
 
 产品中只有“会话”这一种交流容器。会话管理员使用完整邮件地址精确查找并添加已经登录过 Chat 的用户。
 
@@ -8,7 +8,8 @@
 
 ```
 chat-server/
-├── delivery/                                     # 通用 Room 消息核心、协议、Store/Bus
+├── delivery/                                     # 最小投递内核：Event/Cursor/Connection/Bus
+├── messaging/                                    # 通用消息框架：Room/Member/Capability
 ├── main.go handlers.go auth.go store.go          # Chat 业务、REST /api、鉴权与 PG adapter
 └── frontend/                                      # 独立 React + Vite 前端
     ├── vite.config.ts                             # 8080 入口与后端代理

@@ -31,14 +31,16 @@ func (h *webSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
-	rooms, err := h.engine.store.RoomsForIdentity(r.Context(), identity.ID)
+	roomIDs, err := h.engine.access.Routes(r.Context(), identity.ID)
 	if err != nil {
 		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	roomIDs := make([]string, 0, len(rooms))
-	for _, room := range rooms {
-		roomIDs = append(roomIDs, room.ID)
+	for _, roomID := range roomIDs {
+		if !validID(roomID) {
+			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
 	}
 	upgrader := websocket.Upgrader{
 		HandshakeTimeout: 5 * time.Second,
@@ -122,19 +124,19 @@ func (c *socketClient) readPump(ctx context.Context) {
 }
 
 func (c *socketClient) handlePublish(ctx context.Context, envelope inboundEnvelope) {
-	receipt, err := c.engine.publishFromClient(ctx, ClientPublish{
+	event, err := c.engine.publishFromClient(ctx, ClientPublish{
 		IdentityID: c.identityID, ID: envelope.ID, RoomID: envelope.RoomID,
 		Name: envelope.Name, Profile: envelope.Profile, Data: envelope.Data,
-		ExpiresAt: envelope.ExpiresAt, Stream: envelope.Stream,
 	})
 	if err != nil {
 		c.sendEngineError(envelope.ID, err)
 		return
 	}
-	c.enqueue(laneControl, ackEnvelope{
-		Op: "ack", ID: receipt.PublishID, Status: receipt.Status,
-		EventID: receipt.MessageID, Sequence: receipt.Sequence,
-	})
+	status := "accepted"
+	if event.Profile == Durable {
+		status = "committed"
+	}
+	c.enqueue(laneControl, ackEnvelope{Op: "ack", ID: event.PublishID, Status: status, EventID: event.ID, Sequence: event.Sequence})
 }
 
 func (c *socketClient) handleResume(ctx context.Context, envelope inboundEnvelope) {
@@ -147,12 +149,12 @@ func (c *socketClient) handleResume(ctx context.Context, envelope inboundEnvelop
 			c.sendError("", "invalid_message", "invalid room cursor", false)
 			continue
 		}
-		member, err := c.engine.authorizedMember(ctx, roomID, c.identityID, Receive, ReadHistory)
+		historyStart, err := c.engine.historyStart(ctx, c.identityID, roomID)
 		if err != nil {
 			c.sendEngineError("", err)
 			continue
 		}
-		after = max(after, member.HistoryStart-1)
+		after = max(after, historyStart-1)
 		head, err := c.engine.store.HeadSequence(ctx, roomID)
 		if err != nil {
 			c.sendEngineError("", err)
@@ -169,14 +171,14 @@ func (c *socketClient) handleResume(ctx context.Context, envelope inboundEnvelop
 			if len(events) == 0 {
 				break
 			}
-			for _, message := range events {
-				if message.Sequence > head {
+			for _, storedEvent := range events {
+				if storedEvent.Sequence > head {
 					break
 				}
-				event := wireEvent(message)
+				event := wireEvent(storedEvent)
 				event.Recovered = true
 				c.enqueue(laneDurable, event)
-				cursor = message.Sequence
+				cursor = storedEvent.Sequence
 			}
 		}
 		c.enqueue(laneDurable, syncEnvelope{Op: "sync.end", RoomID: roomID, Sequence: cursor})

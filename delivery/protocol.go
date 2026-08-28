@@ -8,15 +8,13 @@ import (
 const Subprotocol = "delivery.v1"
 
 type inboundEnvelope struct {
-	Op        string           `json:"op"`
-	ID        string           `json:"id,omitempty"`
-	RoomID    string           `json:"room_id,omitempty"`
-	Name      string           `json:"name,omitempty"`
-	Profile   Profile          `json:"profile,omitempty"`
-	Data      json.RawMessage  `json:"data,omitempty"`
-	ExpiresAt *time.Time       `json:"expires_at,omitempty"`
-	Stream    *StreamPosition  `json:"stream,omitempty"`
-	Rooms     map[string]int64 `json:"rooms,omitempty"`
+	Op      string           `json:"op"`
+	ID      string           `json:"id,omitempty"`
+	RoomID  string           `json:"room_id,omitempty"`
+	Name    string           `json:"name,omitempty"`
+	Profile Profile          `json:"profile,omitempty"`
+	Data    json.RawMessage  `json:"data,omitempty"`
+	Rooms   map[string]int64 `json:"rooms,omitempty"`
 }
 
 type helloEnvelope struct {
@@ -28,11 +26,11 @@ type helloEnvelope struct {
 }
 
 type ackEnvelope struct {
-	Op       string        `json:"op"`
-	ID       string        `json:"id"`
-	Status   ReceiptStatus `json:"status"`
-	EventID  string        `json:"event_id,omitempty"`
-	Sequence int64         `json:"sequence,omitempty"`
+	Op       string `json:"op"`
+	ID       string `json:"id"`
+	Status   string `json:"status"`
+	EventID  string `json:"event_id,omitempty"`
+	Sequence int64  `json:"sequence,omitempty"`
 }
 
 type eventEnvelope struct {
@@ -47,7 +45,6 @@ type eventEnvelope struct {
 	Data      json.RawMessage `json:"data"`
 	CreatedAt time.Time       `json:"created_at"`
 	ExpiresAt *time.Time      `json:"expires_at,omitempty"`
-	Stream    *StreamPosition `json:"stream,omitempty"`
 	Recovered bool            `json:"recovered,omitempty"`
 }
 
@@ -77,11 +74,11 @@ type errorEnvelope struct {
 	Error     errorBody `json:"error"`
 }
 
-func wireEvent(message Message) eventEnvelope {
+func wireEvent(event Event) eventEnvelope {
 	return eventEnvelope{
-		Op: "event", RoomID: message.RoomID, ID: message.ID, PublishID: message.PublishID,
-		Name: message.Name, Profile: message.Profile, Sequence: message.Sequence,
-		ActorID: message.ActorID, Data: cloneJSON(message.Data), CreatedAt: message.CreatedAt,
-		ExpiresAt: message.ExpiresAt, Stream: message.Stream,
+		Op: "event", RoomID: event.RoomID, ID: event.ID, PublishID: event.PublishID,
+		Name: event.Name, Profile: event.Profile, Sequence: event.Sequence,
+		ActorID: event.ActorID, Data: cloneJSON(event.Data), CreatedAt: event.CreatedAt,
+		ExpiresAt: event.ExpiresAt,
 	}
 }

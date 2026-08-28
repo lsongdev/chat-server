@@ -5,40 +5,35 @@ import (
 	"sync"
 )
 
-type BusMessage struct {
-	Message Message
-}
-
 type Bus interface {
-	Publish(context.Context, BusMessage) error
-	Subscribe(func(BusMessage)) (func(), error)
-	Close() error
+	Publish(context.Context, Event) error
+	Subscribe(func(Event)) (func(), error)
 }
 
 type MemoryBus struct {
 	mu          sync.RWMutex
 	nextID      uint64
-	subscribers map[uint64]func(BusMessage)
+	subscribers map[uint64]func(Event)
 	closed      bool
 }
 
 func NewMemoryBus() *MemoryBus {
-	return &MemoryBus{subscribers: make(map[uint64]func(BusMessage))}
+	return &MemoryBus{subscribers: make(map[uint64]func(Event))}
 }
 
-func (b *MemoryBus) Publish(_ context.Context, message BusMessage) error {
+func (b *MemoryBus) Publish(_ context.Context, event Event) error {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	if b.closed {
 		return ErrNotFound
 	}
 	for _, subscriber := range b.subscribers {
-		subscriber(message)
+		subscriber(event)
 	}
 	return nil
 }
 
-func (b *MemoryBus) Subscribe(subscriber func(BusMessage)) (func(), error) {
+func (b *MemoryBus) Subscribe(subscriber func(Event)) (func(), error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed {

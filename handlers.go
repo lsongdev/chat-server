@@ -14,17 +14,17 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
-	"github.com/lsongdev/chat-server/delivery"
+	"github.com/lsongdev/chat-server/messaging"
 )
 
 type API struct {
-	store    *Store
-	delivery *delivery.Engine
-	config   Config
+	store     *Store
+	messaging *messaging.Engine
+	config    Config
 }
 
-func NewAPI(store *Store, messageDelivery *delivery.Engine, cfg Config) *API {
-	return &API{store: store, delivery: messageDelivery, config: cfg}
+func NewAPI(store *Store, messageEngine *messaging.Engine, cfg Config) *API {
+	return &API{store: store, messaging: messageEngine, config: cfg}
 }
 
 func (a *API) Me(w http.ResponseWriter, r *http.Request) {
@@ -159,8 +159,8 @@ func (a *API) DeleteConversation(w http.ResponseWriter, r *http.Request) {
 		handleStoreError(w, r, err)
 		return
 	}
-	if a.delivery != nil {
-		a.delivery.RemoveRoomRouting(conversationID.String())
+	if a.messaging != nil {
+		a.messaging.InvalidateRoom(conversationID.String())
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -326,14 +326,14 @@ func (a *API) ListEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) notifyCommitted(ctx context.Context, event Event) {
-	if a.delivery != nil {
-		_ = a.delivery.NotifyCommitted(ctx, deliveryMessage(event))
+	if a.messaging != nil {
+		_ = a.messaging.Broadcast(ctx, messagingEvent(event))
 	}
 }
 
 func (a *API) refreshDeliveryIdentity(ctx context.Context, identityID uuid.UUID) {
-	if a.delivery != nil {
-		_ = a.delivery.RefreshIdentity(ctx, identityID.String())
+	if a.messaging != nil {
+		_ = a.messaging.RefreshIdentity(ctx, identityID.String())
 	}
 }
 

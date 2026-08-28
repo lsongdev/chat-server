@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/lsongdev/chat-server/delivery"
+	"github.com/lsongdev/chat-server/messaging"
 )
 
 func main() {
@@ -42,16 +42,17 @@ func run() error {
 		return err
 	}
 	limiter := NewRateLimiter()
-	deliveryEngine, err := delivery.New(delivery.Options{
-		Authenticate: func(ctx context.Context, _ *http.Request) (delivery.Identity, error) {
+	messagingStore := NewChatMessagingStore(store)
+	messagingEngine, err := messaging.New(messaging.Options{
+		Authenticate: func(ctx context.Context, _ *http.Request) (messaging.Identity, error) {
 			user, ok := currentUser(ctx)
 			if !ok {
-				return delivery.Identity{}, delivery.ErrPermissionDenied
+				return messaging.Identity{}, messaging.ErrPermissionDenied
 			}
-			return delivery.Identity{ID: user.ID.String()}, nil
+			return messaging.Identity{ID: user.ID.String()}, nil
 		},
-		Store:               NewChatDeliveryStore(store),
-		Limits:              delivery.Limits{MaxMessageBytes: cfg.MaxMessageBytes},
+		Store:               messagingStore,
+		Limits:              messaging.Limits{MaxMessageBytes: cfg.MaxMessageBytes},
 		HandleClientPublish: chatClientPublish(cfg.MaxMessageBytes),
 		OriginCheck: func(request *http.Request) bool {
 			_, ok := cfg.AllowedOrigins[request.Header.Get("Origin")]
@@ -61,8 +62,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer deliveryEngine.Close()
-	api := NewAPI(store, deliveryEngine, cfg)
+	defer messagingEngine.Close()
+	api := NewAPI(store, messagingEngine, cfg)
 
 	router := mux.NewRouter()
 	router.Handle("/auth/login", limiter.LoginMiddleware(cfg, http.HandlerFunc(auth.Login))).Methods(http.MethodGet)
@@ -89,7 +90,7 @@ func run() error {
 	protected.HandleFunc("/contacts/{contactID}", api.DeleteContact).Methods(http.MethodDelete)
 	protected.HandleFunc("/conversations/{id}/events", api.ListEvents).Methods(http.MethodGet)
 	protected.HandleFunc("/conversations/{id}/read", api.UpdateRead).Methods(http.MethodPost)
-	router.Handle("/realtime", auth.Required(deliveryEngine.Handler())).Methods(http.MethodGet)
+	router.Handle("/realtime", auth.Required(messagingEngine.Handler())).Methods(http.MethodGet)
 	router.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }).Methods(http.MethodGet)
 	router.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
